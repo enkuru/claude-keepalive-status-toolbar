@@ -31,6 +31,19 @@ function menuLine(text) {
   console.log(text);
 }
 
+function pickColorByPercent(percent) {
+  const clamped = clampPercent(percent);
+  if (clamped === null) return '#9CA3AF'; // gray
+  if (clamped >= 90) return '#EF4444'; // red
+  if (clamped >= 70) return '#F59E0B'; // amber
+  return '#10B981'; // emerald
+}
+
+function pickStatusColor(isActive, limitsOk) {
+  if (!limitsOk) return '#EF4444';
+  return isActive ? '#10B981' : '#9CA3AF';
+}
+
 function clampPercent(value) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return null;
   return Math.max(0, Math.min(100, value));
@@ -41,7 +54,7 @@ function progressBar(percent, width = 10) {
   if (clamped === null) return 'n/a';
   const filled = Math.round((clamped / 100) * width);
   const empty = Math.max(0, width - filled);
-  return `[${'█'.repeat(filled)}${'░'.repeat(empty)}] ${Math.round(clamped)}%`;
+  return `${'█'.repeat(filled)}${'░'.repeat(empty)} ${Math.round(clamped)}%`;
 }
 
 function formatResetTime(value) {
@@ -88,59 +101,67 @@ async function main() {
   const activeWindowMs = config.activeMinutes * 60 * 1000;
   const isActive = !!(lastActivity && now - lastActivity <= activeWindowMs);
 
-  let header = 'Claude: Idle';
-  if (isActive) header = 'Claude: Active';
-  if (!limits) header = 'Claude: Limits Unknown';
+  let header = 'Claude · Idle';
+  if (isActive) header = 'Claude · Active';
+  if (!limits) header = 'Claude · Limits Unknown';
 
   const fiveUtil = limits?.five_hour?.utilization;
   const fiveClamped = clampPercent(fiveUtil);
   if (fiveClamped !== null && fiveClamped >= 100) {
-    header = `${header} (Limit)`;
+    header = `${header} · Limit`;
   }
   const limitsOk =
     limits && limitOk(limits.five_hour) && limitOk(limits.seven_day);
+  const statusColor = pickStatusColor(isActive, limitsOk);
 
-  menuLine(header);
+  menuLine(`${header} | color=${statusColor} font=SF Pro Text size=12`);
   menuLine('---');
-  menuLine(`Status: ${isActive ? 'Active' : 'Idle'}`);
-  menuLine(`Last activity: ${formatAge(lastActivity)}`);
-  menuLine(`Session start: ${formatAge(sessionStart)}`);
+  menuLine(`Status: ${isActive ? 'Active' : 'Idle'} | color=${statusColor}`);
+  menuLine(
+    `Session start: ${formatAge(sessionStart)}   ·   Last activity: ${formatAge(
+      lastActivity
+    )} | color=#CBD5F5`
+  );
 
   if (limits) {
     const seven = limits.seven_day?.utilization;
     const fiveReset = limits.five_hour?.resets_at;
     const sevenReset = limits.seven_day?.resets_at;
+    const fiveColor = pickColorByPercent(fiveUtil);
+    const sevenColor = pickColorByPercent(seven);
     menuLine(
-      `5h limit: ${progressBar(fiveUtil)} (${limitOk(limits.five_hour) ? 'ok' : 'full'})`
+      `5h limit: ${progressBar(fiveUtil)} (${limitOk(limits.five_hour) ? 'ok' : 'full'}) | color=${fiveColor} font=Menlo`
     );
-    menuLine(`5h resets: ${formatResetTime(fiveReset)}`);
+    menuLine(`5h resets: ${formatResetTime(fiveReset)} | color=#93C5FD`);
     menuLine(
-      `7d limit: ${progressBar(seven)} (${limitOk(limits.seven_day) ? 'ok' : 'full'})`
+      `7d limit: ${progressBar(seven)} (${limitOk(limits.seven_day) ? 'ok' : 'full'}) | color=${sevenColor} font=Menlo`
     );
-    menuLine(`7d resets: ${formatResetTime(sevenReset)}`);
+    menuLine(`7d resets: ${formatResetTime(sevenReset)} | color=#93C5FD`);
   } else {
-    menuLine('5h limit: n/a');
-    menuLine('7d limit: n/a');
+    menuLine('5h limit: n/a | color=#9CA3AF');
+    menuLine('7d limit: n/a | color=#9CA3AF');
   }
 
   if (state?.lastLaunch) {
-    menuLine(`Last hello: ${formatAge(state.lastLaunch)} ago`);
+    menuLine(`Last hello: ${formatAge(state.lastLaunch)} ago | color=#A7F3D0`);
   } else {
-    menuLine('Last hello: never');
+    menuLine('Last hello: never | color=#A7F3D0');
   }
-  menuLine(`Hello history: ${formatHistory(state?.history, state?.lastLaunch)}`);
+  menuLine(
+    `Hello history: ${formatHistory(state?.history, state?.lastLaunch)} | color=#A7F3D0`
+  );
 
   menuLine('---');
   if (limitsOk && keeperPath) {
     menuLine(
-      `Send hello now | bash=/usr/bin/env param1=node param2=${keeperPath} param3=--once param4=--active-minutes=0 param5=--cooldown-minutes=0 terminal=false refresh=true`
+      `Send hello now | color=#22C55E bash=/usr/bin/env param1=node param2=${keeperPath} param3=--once param4=--active-minutes=0 param5=--cooldown-minutes=0 terminal=false refresh=true`
     );
   } else if (!keeperPath) {
     menuLine('Send hello now (set KEEPALIVE_PATH) | disabled=true');
   } else {
     menuLine('Send hello now (limits full) | disabled=true');
   }
-  menuLine('Active session keeper status');
+  menuLine('Active session keeper status | color=#94A3B8');
 }
 
 main().catch(() => {
