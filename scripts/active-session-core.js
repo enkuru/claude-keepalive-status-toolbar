@@ -144,6 +144,44 @@ export async function readLastTranscriptTimestamp(filePath, tailBytes) {
   }
 }
 
+export async function readFirstTranscriptTimestamp(filePath, headBytes) {
+  try {
+    const fileStat = await stat(filePath);
+    const readSize = Math.min(fileStat.size, headBytes);
+
+    const fh = await open(filePath, 'r');
+    try {
+      const buffer = Buffer.alloc(readSize);
+      await fh.read(buffer, 0, readSize, 0);
+      const text = buffer.toString('utf-8');
+      const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+
+      for (let i = 0; i < lines.length; i++) {
+        try {
+          const entry = JSON.parse(lines[i]);
+          const tsValue =
+            entry?.timestamp ||
+            entry?.snapshot?.timestamp ||
+            entry?.message?.timestamp ||
+            entry?.data?.timestamp;
+          if (tsValue) {
+            const ts = new Date(tsValue).getTime();
+            if (!Number.isNaN(ts)) return ts;
+          }
+        } catch {
+          // ignore malformed line
+        }
+      }
+    } finally {
+      await fh.close();
+    }
+
+    return fileStat.mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
 export async function getLatestActivityTimestamp(config) {
   if (config.transcriptPath) {
     return await readLastTranscriptTimestamp(config.transcriptPath, config.tailBytes);
@@ -154,6 +192,19 @@ export async function getLatestActivityTimestamp(config) {
   if (!latest) return null;
 
   return await readLastTranscriptTimestamp(latest.path, config.tailBytes);
+}
+
+export async function getSessionStartTimestamp(config) {
+  const headBytes = Math.min(config.tailBytes || DEFAULTS.tailBytes, 256 * 1024);
+  if (config.transcriptPath) {
+    return await readFirstTranscriptTimestamp(config.transcriptPath, headBytes);
+  }
+
+  const dirs = getSearchDirs();
+  const latest = await findLatestTranscriptFile(dirs, config.maxDepth);
+  if (!latest) return null;
+
+  return await readFirstTranscriptTimestamp(latest.path, headBytes);
 }
 
 export async function getOAuthToken() {

@@ -127,7 +127,9 @@ async function tick(config) {
     }
 
     launchClaudeHello(config.helloDelaySeconds, config.dryRun);
-    await writeState({ lastLaunch: now });
+    const history = Array.isArray(state?.history) ? state.history.slice(-19) : [];
+    history.push(now);
+    await writeState({ lastLaunch: now, history });
     log('Launched Claude with hello prompt.');
   } finally {
     tickInProgress = false;

@@ -3,6 +3,7 @@
 import {
   DEFAULTS,
   getLatestActivityTimestamp,
+  getSessionStartTimestamp,
   fetchUsageLimits,
   limitOk,
   readState,
@@ -57,9 +58,18 @@ function formatResetTime(value) {
   return `${days}d`;
 }
 
+function formatHistory(history, lastLaunch, maxItems = 3) {
+  const base = Array.isArray(history) ? history : [];
+  const itemsRaw = base.length ? base : lastLaunch ? [lastLaunch] : [];
+  if (!itemsRaw.length) return 'none';
+  const items = itemsRaw.slice(-maxItems).reverse();
+  return items.map((ts) => formatAge(ts)).join(', ');
+}
+
 async function main() {
   const config = getConfigFromEnv();
   const lastActivity = await getLatestActivityTimestamp(config);
+  const sessionStart = await getSessionStartTimestamp(config);
   const limits = await fetchUsageLimits();
   const state = await readState();
   const scriptDir = path.dirname(fileURLToPath(import.meta.url));
@@ -94,6 +104,7 @@ async function main() {
   menuLine('---');
   menuLine(`Status: ${isActive ? 'Active' : 'Idle'}`);
   menuLine(`Last activity: ${formatAge(lastActivity)}`);
+  menuLine(`Session start: ${formatAge(sessionStart)}`);
 
   if (limits) {
     const seven = limits.seven_day?.utilization;
@@ -117,6 +128,7 @@ async function main() {
   } else {
     menuLine('Last hello: never');
   }
+  menuLine(`Hello history: ${formatHistory(state?.history, state?.lastLaunch)}`);
 
   menuLine('---');
   if (limitsOk && keeperPath) {
