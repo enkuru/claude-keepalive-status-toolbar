@@ -6,6 +6,8 @@ A lightweight macOS menu bar status (SwiftBar) + keepalive loop for Claude Code.
 - **Keepalive**: every 10 minutes, if no recent activity and both 5h + 7d limits are under 100%, it spawns `claude` and sends `hello` after 5 seconds.
 - **Manual button**: “Send hello now” appears in the menu (only enabled when limits are OK).
 
+![Menu Bar Screenshot](images/menu.png)
+
 ## Requirements
 
 - macOS
