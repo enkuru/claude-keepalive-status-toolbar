@@ -1,0 +1,19 @@
+{
+  "name": "claude-keepalive-status-toolbar",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Claude keepalive loop + SwiftBar menu for session activity and rate limits",
+  "scripts": {
+    "keepalive": "node scripts/active-session-keeper.js",
+    "keepalive:once": "node scripts/active-session-keeper.js --once"
+  },
+  "keywords": [
+    "claude",
+    "swiftbar",
+    "menu-bar",
+    "keepalive",
+    "rate-limits"
+  ],
+  "author": "enes",
+  "license": "MIT"
+}
