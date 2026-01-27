@@ -16,6 +16,8 @@ export const DEFAULTS = {
 
 export const CACHE_DIR = path.join(os.homedir(), '.cache', 'claude-dashboard');
 export const STATE_PATH = path.join(CACHE_DIR, 'active-session-keeper.json');
+const LIMITS_CACHE_PATH = path.join(CACHE_DIR, 'usage-limits-cache.json');
+const DEFAULT_LIMITS_CACHE_MINUTES = 180;
 
 const CLAUDE_CONFIG_DIR_ENV = 'CLAUDE_CONFIG_DIR';
 
@@ -144,44 +146,6 @@ export async function readLastTranscriptTimestamp(filePath, tailBytes) {
   }
 }
 
-export async function readFirstTranscriptTimestamp(filePath, headBytes) {
-  try {
-    const fileStat = await stat(filePath);
-    const readSize = Math.min(fileStat.size, headBytes);
-
-    const fh = await open(filePath, 'r');
-    try {
-      const buffer = Buffer.alloc(readSize);
-      await fh.read(buffer, 0, readSize, 0);
-      const text = buffer.toString('utf-8');
-      const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
-
-      for (let i = 0; i < lines.length; i++) {
-        try {
-          const entry = JSON.parse(lines[i]);
-          const tsValue =
-            entry?.timestamp ||
-            entry?.snapshot?.timestamp ||
-            entry?.message?.timestamp ||
-            entry?.data?.timestamp;
-          if (tsValue) {
-            const ts = new Date(tsValue).getTime();
-            if (!Number.isNaN(ts)) return ts;
-          }
-        } catch {
-          // ignore malformed line
-        }
-      }
-    } finally {
-      await fh.close();
-    }
-
-    return fileStat.mtimeMs;
-  } catch {
-    return null;
-  }
-}
-
 export async function getLatestActivityTimestamp(config) {
   if (config.transcriptPath) {
     return await readLastTranscriptTimestamp(config.transcriptPath, config.tailBytes);
@@ -194,17 +158,65 @@ export async function getLatestActivityTimestamp(config) {
   return await readLastTranscriptTimestamp(latest.path, config.tailBytes);
 }
 
+export async function readSessionStartTimestamp(filePath, headBytes) {
+  try {
+    const fileStat = await stat(filePath);
+    const readSize = Math.min(fileStat.size, headBytes);
+
+    const fh = await open(filePath, 'r');
+    try {
+      const buffer = Buffer.alloc(readSize);
+      await fh.read(buffer, 0, readSize, 0);
+      const text = buffer.toString('utf-8');
+      const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+
+      let firstTimestamp = null;
+      for (let i = 0; i < lines.length; i++) {
+        try {
+          const entry = JSON.parse(lines[i]);
+          const tsValue =
+            entry?.timestamp ||
+            entry?.snapshot?.timestamp ||
+            entry?.message?.timestamp ||
+            entry?.data?.timestamp;
+          if (tsValue && !firstTimestamp) {
+            const ts = new Date(tsValue).getTime();
+            if (!Number.isNaN(ts)) firstTimestamp = ts;
+          }
+
+          if (entry?.data?.type === 'hook_progress' && entry?.data?.hookEvent === 'SessionStart') {
+            if (tsValue) {
+              const ts = new Date(tsValue).getTime();
+              if (!Number.isNaN(ts)) return ts;
+            }
+          }
+        } catch {
+          // ignore malformed line
+        }
+      }
+
+      if (firstTimestamp) return firstTimestamp;
+    } finally {
+      await fh.close();
+    }
+
+    return fileStat.mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
 export async function getSessionStartTimestamp(config) {
   const headBytes = Math.min(config.tailBytes || DEFAULTS.tailBytes, 256 * 1024);
   if (config.transcriptPath) {
-    return await readFirstTranscriptTimestamp(config.transcriptPath, headBytes);
+    return await readSessionStartTimestamp(config.transcriptPath, headBytes);
   }
 
   const dirs = getSearchDirs();
   const latest = await findLatestTranscriptFile(dirs, config.maxDepth);
   if (!latest) return null;
 
-  return await readFirstTranscriptTimestamp(latest.path, headBytes);
+  return await readSessionStartTimestamp(latest.path, headBytes);
 }
 
 export async function getOAuthToken() {
@@ -233,9 +245,88 @@ export async function getOAuthToken() {
   }
 }
 
-export async function fetchUsageLimits() {
+async function readDashboardCache(maxAgeMinutes, allowStale) {
+  try {
+    const entries = await readdir(CACHE_DIR, { withFileTypes: true });
+    const candidates = entries
+      .filter((ent) => ent.isFile() && ent.name.startsWith('cache-') && ent.name.endsWith('.json'))
+      .map((ent) => path.join(CACHE_DIR, ent.name));
+    if (!candidates.length) return null;
+
+    let best = null;
+    for (const filePath of candidates) {
+      try {
+        const raw = await readFile(filePath, 'utf-8');
+        const payload = JSON.parse(raw);
+        const ts = typeof payload.timestamp === 'number' ? payload.timestamp : null;
+        const limits = payload.data ?? null;
+        if (!ts || !limits) continue;
+        if (!best || ts > best.timestamp) {
+          best = { timestamp: ts, limits };
+        }
+      } catch {
+        // ignore bad cache files
+      }
+    }
+    if (!best) return null;
+    const ageMs = Date.now() - best.timestamp;
+    const maxAgeMs = maxAgeMinutes * 60 * 1000;
+    const stale = ageMs > maxAgeMs;
+    if (stale && !allowStale) return null;
+    return { limits: best.limits, stale, ageMinutes: Math.round(ageMs / 60000) };
+  } catch {
+    return null;
+  }
+}
+
+export async function writeLimitsCache(limits) {
+  try {
+    await mkdir(CACHE_DIR, { recursive: true, mode: 0o700 });
+    await writeFile(
+      LIMITS_CACHE_PATH,
+      JSON.stringify({ timestamp: Date.now(), limits }, null, 2),
+      { mode: 0o600 }
+    );
+  } catch {
+    // ignore
+  }
+}
+
+async function readLimitsCache(maxAgeMinutes, allowStale) {
+  try {
+    const raw = await readFile(LIMITS_CACHE_PATH, 'utf-8');
+    const payload = JSON.parse(raw);
+    const ts = typeof payload.timestamp === 'number' ? payload.timestamp : null;
+    const limits = payload.limits ?? null;
+    if (!ts || !limits) throw new Error('invalid cache');
+    const ageMs = Date.now() - ts;
+    const maxAgeMs = maxAgeMinutes * 60 * 1000;
+    const stale = ageMs > maxAgeMs;
+    if (stale && !allowStale) return null;
+    return { limits, stale, ageMinutes: Math.round(ageMs / 60000) };
+  } catch {
+    return await readDashboardCache(maxAgeMinutes, allowStale);
+  }
+}
+
+export async function fetchUsageLimits(options = {}) {
+  const allowStale =
+    typeof options.allowStale === 'boolean' ? options.allowStale : true;
+  const allowCache =
+    typeof options.allowCache === 'boolean' ? options.allowCache : true;
+  const maxAgeMinutes =
+    typeof options.maxAgeMinutes === 'number'
+      ? options.maxAgeMinutes
+      : DEFAULT_LIMITS_CACHE_MINUTES;
+
   const token = await getOAuthToken();
-  if (!token) return null;
+  if (!token) {
+    if (!allowCache) return null;
+    const cached = await readLimitsCache(maxAgeMinutes, allowStale);
+    return cached
+      ? { limits: cached.limits, stale: cached.stale, ageMinutes: cached.ageMinutes }
+      : null;
+  }
 
   try {
     const response = await fetch('https://api.anthropic.com/api/oauth/usage', {
@@ -249,15 +340,27 @@ export async function fetchUsageLimits() {
       },
     });
 
-    if (!response.ok) return null;
+    if (!response.ok) {
+      if (!allowCache) return null;
+      const cached = await readLimitsCache(maxAgeMinutes, allowStale);
+      return cached
+        ? { limits: cached.limits, stale: cached.stale, ageMinutes: cached.ageMinutes }
+        : null;
+    }
 
     const data = await response.json();
-    return {
+    const limits = {
       five_hour: data.five_hour ?? null,
       seven_day: data.seven_day ?? null,
     };
+    await writeLimitsCache(limits);
+    return { limits, stale: false, ageMinutes: 0 };
   } catch {
-    return null;
+    if (!allowCache) return null;
+    const cached = await readLimitsCache(maxAgeMinutes, allowStale);
+    return cached
+      ? { limits: cached.limits, stale: cached.stale, ageMinutes: cached.ageMinutes }
+      : null;
   }
 }
 

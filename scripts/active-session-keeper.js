@@ -102,19 +102,28 @@ async function tick(config) {
       return;
     }
 
-    const limits = await fetchUsageLimits();
-    if (!limits) {
+    const limitsInfo = await fetchUsageLimits({
+      allowStale: true,
+      allowCache: true,
+      maxAgeMinutes: 360,
+    });
+    if (!limitsInfo) {
       log('Unable to fetch limits; skipping.');
       return;
     }
+    if (limitsInfo.stale) {
+      log('Using cached limits (stale).', { ageMinutes: limitsInfo.ageMinutes });
+    }
+    const limits = limitsInfo.limits;
 
     const okFive = limitOk(limits.five_hour);
     const okSeven = limitOk(limits.seven_day);
 
-    if (!okFive || !okSeven) {
+    if (!okFive || !okSeven || limitsInfo.stale) {
       log('Rate limits reached or unavailable; skipping.', {
         five_hour: limits.five_hour?.utilization,
         seven_day: limits.seven_day?.utilization,
+        stale: limitsInfo.stale,
       });
       return;
     }

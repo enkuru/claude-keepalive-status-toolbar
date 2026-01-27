@@ -105,6 +105,17 @@ It scans JSONL files and uses the most recent timestamp found.
   - Ensure you have `~/.claude/projects` or `~/.config/claude/projects` with JSONL files.
 - **“Send hello now” is disabled**
   - Either limits are full, or the keepalive script path can’t be found.
+- **Limits show “Unknown” or “Cached” after sleep**
+  - This usually means **Keychain access is blocked** or the **OAuth token expired**.
+  - **Re-enable Keychain access**:
+    1. Open **Keychain Access** → unlock “login” keychain
+    2. Search for **“Claude Code-credentials”**
+    3. Open it → **Access Control** → allow SwiftBar (or “Allow all applications”)
+    4. Test in Terminal:
+       ```
+       security find-generic-password -s "Claude Code-credentials" -w
+       ```
+  - If the API says **token expired**, open Claude Code and re-auth once (sign out/in if needed).
 - **No menu bar item**
   - Open SwiftBar → Preferences → Plugins → Refresh.
 

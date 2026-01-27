@@ -3,6 +3,12 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PLIST="$HOME/Library/LaunchAgents/com.enes.claude-keepalive.plist"
+NODE_BIN="$(command -v node || true)"
+
+if [ -z "$NODE_BIN" ]; then
+  echo "Error: node not found on PATH. Please install Node.js 18+."
+  exit 1
+fi
 
 cat > "$PLIST" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -13,10 +19,14 @@ cat > "$PLIST" <<PLIST
     <string>com.enes.claude-keepalive</string>
     <key>ProgramArguments</key>
     <array>
-      <string>/usr/bin/env</string>
-      <string>node</string>
+      <string>${NODE_BIN}</string>
       <string>${REPO_ROOT}/scripts/active-session-keeper.js</string>
     </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>PATH</key>
+      <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
     <key>WorkingDirectory</key>
     <string>${REPO_ROOT}</string>
     <key>RunAtLoad</key>

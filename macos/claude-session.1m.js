@@ -31,6 +31,16 @@ function menuLine(text) {
   console.log(text);
 }
 
+function resolveNodePath() {
+  const envNode = process.env.KEEPALIVE_NODE || process.env.NODE_PATH;
+  if (envNode && existsSync(envNode)) return envNode;
+  const candidates = ['/opt/homebrew/bin/node', '/usr/local/bin/node', '/usr/bin/node'];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return 'node';
+}
+
 function pickColorByPercent(percent) {
   const clamped = clampPercent(percent);
   if (clamped === null) return '#9CA3AF'; // gray
@@ -39,9 +49,20 @@ function pickColorByPercent(percent) {
   return '#10B981'; // emerald
 }
 
-function pickStatusColor(isActive, limitsOk) {
-  if (!limitsOk) return '#EF4444';
-  return isActive ? '#10B981' : '#9CA3AF';
+function pickStatusColor(state) {
+  switch (state) {
+    case 'Unknown':
+      return '#EF4444';
+    case 'Cached':
+      return '#F59E0B';
+    case 'Limit':
+      return '#EF4444';
+    case 'Active':
+      return '#10B981';
+    case 'Idle':
+    default:
+      return '#9CA3AF';
+  }
 }
 
 function clampPercent(value) {
@@ -71,6 +92,15 @@ function formatResetTime(value) {
   return `${days}d`;
 }
 
+function formatAgeFromMinutes(minutes) {
+  if (typeof minutes !== 'number' || !Number.isFinite(minutes)) return 'unknown';
+  if (minutes < 60) return `${Math.round(minutes)}m`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.round(hours / 24);
+  return `${days}d`;
+}
+
 function formatHistory(history, lastLaunch, maxItems = 3) {
   const base = Array.isArray(history) ? history : [];
   const itemsRaw = base.length ? base : lastLaunch ? [lastLaunch] : [];
@@ -83,7 +113,12 @@ async function main() {
   const config = getConfigFromEnv();
   const lastActivity = await getLatestActivityTimestamp(config);
   const sessionStart = await getSessionStartTimestamp(config);
-  const limits = await fetchUsageLimits();
+  const limitsInfo = await fetchUsageLimits({
+    allowStale: true,
+    allowCache: true,
+    maxAgeMinutes: 360,
+  });
+  const limits = limitsInfo?.limits ?? null;
   const state = await readState();
   const scriptDir = path.dirname(fileURLToPath(import.meta.url));
   const repoRoot = path.resolve(scriptDir, '..');
@@ -96,25 +131,31 @@ async function main() {
     const candidate = path.join(repoRoot, 'scripts', 'active-session-keeper.js');
     if (existsSync(candidate)) keeperPath = candidate;
   }
+  const nodePath = resolveNodePath();
+  const runOnceArgs = keeperPath
+    ? [
+        nodePath,
+        keeperPath,
+        '--once',
+        '--active-minutes=0',
+        '--cooldown-minutes=0',
+      ]
+    : null;
 
   const now = Date.now();
   const activeWindowMs = config.activeMinutes * 60 * 1000;
   const isActive = !!(lastActivity && now - lastActivity <= activeWindowMs);
 
-  let header = 'Claude · Idle';
-  if (isActive) header = 'Claude · Active';
-  if (!limits) header = 'Claude · Limits Unknown';
-
   const fiveUtil = limits?.five_hour?.utilization;
   const fiveClamped = clampPercent(fiveUtil);
-  if (fiveClamped !== null && fiveClamped >= 100) {
-    header = `${header} · Limit`;
-  }
+  let headerState = 'Idle';
+  if (!limits) headerState = 'Unknown';
+  else if (fiveClamped !== null && fiveClamped >= 100) headerState = 'Limit';
+  else if (isActive) headerState = 'Active';
   const limitsOk =
     limits && limitOk(limits.five_hour) && limitOk(limits.seven_day);
-  const statusColor = pickStatusColor(isActive, limitsOk);
-
-  menuLine(`${header} | color=${statusColor} font=SF Pro Text size=12`);
+  const statusColor = pickStatusColor(headerState);
+  menuLine(`Claude ${headerState} | color=${statusColor} font=SF Pro Text size=12`);
   menuLine('---');
   menuLine(`Status: ${isActive ? 'Active' : 'Idle'} | color=${statusColor}`);
   menuLine(
@@ -122,6 +163,11 @@ async function main() {
       lastActivity
     )} | color=#CBD5F5`
   );
+  if (limitsInfo?.stale) {
+    menuLine(
+      `Limits: cached (${formatAgeFromMinutes(limitsInfo.ageMinutes)} ago) | color=#F59E0B`
+    );
+  }
 
   if (limits) {
     const seven = limits.seven_day?.utilization;
@@ -152,9 +198,9 @@ async function main() {
   );
 
   menuLine('---');
-  if (limitsOk && keeperPath) {
+  if (limitsOk && runOnceArgs) {
     menuLine(
-      `Send hello now | color=#22C55E bash=/usr/bin/env param1=node param2=${keeperPath} param3=--once param4=--active-minutes=0 param5=--cooldown-minutes=0 terminal=false refresh=true`
+      `Send hello now | color=#22C55E bash=${runOnceArgs[0]} param1=${runOnceArgs[1]} param2=${runOnceArgs[2]} param3=${runOnceArgs[3]} param4=${runOnceArgs[4]} terminal=false refresh=true`
     );
   } else if (!keeperPath) {
     menuLine('Send hello now (set KEEPALIVE_PATH) | disabled=true');
@@ -164,6 +210,9 @@ async function main() {
   menuLine('Active session keeper status | color=#94A3B8');
 }
 
-main().catch(() => {
+main().catch((error) => {
+  if (process.env.DEBUG_MENU) {
+    console.error(error);
+  }
   console.log('Claude: Error');
 });
