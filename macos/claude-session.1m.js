@@ -83,13 +83,19 @@ function formatResetTime(value) {
   const ts = new Date(value).getTime();
   if (Number.isNaN(ts)) return 'unknown';
   const deltaMs = ts - Date.now();
-  const minutes = Math.round(deltaMs / 60000);
-  if (minutes <= 0) return 'now';
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 48) return `${hours}h`;
-  const days = Math.round(hours / 24);
-  return `${days}d`;
+  const totalMinutes = Math.max(0, Math.ceil(deltaMs / 60000));
+  if (totalMinutes === 0) return 'now';
+  if (totalMinutes < 60) return `${totalMinutes}m`;
+  if (totalMinutes < 1440) {
+    const hours = Math.floor(totalMinutes / 60);
+    const minutes = totalMinutes % 60;
+    return `${hours}h ${minutes}m`;
+  }
+  const days = Math.floor(totalMinutes / 1440);
+  const remainder = totalMinutes % 1440;
+  const hours = Math.floor(remainder / 60);
+  const minutes = remainder % 60;
+  return `${days}d ${hours}h ${minutes}m`;
 }
 
 function formatAgeFromMinutes(minutes) {
