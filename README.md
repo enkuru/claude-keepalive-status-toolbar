@@ -2,7 +2,7 @@
 
 A lightweight macOS menu bar status (SwiftBar) + keepalive loop for Claude Code.
 
-- **Menu bar**: live activity status, session start, last activity age, rate-limit progress bars, reset times, and hello history.
+- **Menu bar**: live activity status, session start, last activity age, rate-limit progress bars, reset times, extra usage on/off, and hello history.
 - **Keepalive**: every 10 minutes, if no recent activity and both 5h + 7d limits are under 100%, it spawns `claude` and sends `hello` after 5 seconds.
 - **Manual button**: “Send hello now” appears in the menu (only enabled when limits are OK).
 
@@ -74,10 +74,13 @@ It scans JSONL files and uses the most recent timestamp found.
 ## Menu items
 
 - **Claude: Active / Idle**
+- **Title line**: `Claude 5h: XX%  7d: YY%` (shows reset time when a limit is full)
 - **Last activity: 1m**
 - **5h limit / 7d limit**: progress bars + %
 - **5h resets / 7d resets**: time until reset
+- **Extra usage**: On / Off (from OAuth profile)
 - **Send hello now**: manual trigger (only if limits OK)
+- **Pause keepalive 30m** / **Resume keepalive**
 
 ## Configuration
 
@@ -88,6 +91,8 @@ It scans JSONL files and uses the most recent timestamp found.
 - `--hello-delay-seconds=5`
 - `--cooldown-minutes=10`
 - `--reauth-cooldown-minutes=60`
+- `--pause-minutes=30`
+- `--resume`
 - `--transcript-path=/path/to/file.jsonl`
 - `--once`
 - `--dry-run`
