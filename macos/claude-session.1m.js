@@ -161,7 +161,15 @@ async function main() {
   const limitsOk =
     limits && limitOk(limits.five_hour) && limitOk(limits.seven_day);
   const statusColor = pickStatusColor(headerState);
-  menuLine(`Claude ${headerState} | color=${statusColor} font=SF Pro Text size=12`);
+  const fiveText =
+    fiveClamped === null ? '5h: n/a' : `5h: ${Math.round(fiveClamped)}%`;
+  const sevenUtil = limits?.seven_day?.utilization;
+  const sevenClamped = clampPercent(sevenUtil);
+  const sevenText =
+    sevenClamped === null ? '7d: n/a' : `7d: ${Math.round(sevenClamped)}%`;
+  menuLine(
+    `Claude ${fiveText}  ${sevenText} | color=${statusColor} font=SF Pro Text size=12`
+  );
   menuLine('---');
   menuLine(`Status: ${isActive ? 'Active' : 'Idle'} | color=${statusColor}`);
   menuLine(
