@@ -17,7 +17,9 @@ export const DEFAULTS = {
 export const CACHE_DIR = path.join(os.homedir(), '.cache', 'claude-dashboard');
 export const STATE_PATH = path.join(CACHE_DIR, 'active-session-keeper.json');
 const LIMITS_CACHE_PATH = path.join(CACHE_DIR, 'usage-limits-cache.json');
+const EXTRA_USAGE_CACHE_PATH = path.join(CACHE_DIR, 'extra-usage-cache.json');
 const DEFAULT_LIMITS_CACHE_MINUTES = 180;
+const DEFAULT_EXTRA_USAGE_CACHE_MINUTES = 360;
 
 const CLAUDE_CONFIG_DIR_ENV = 'CLAUDE_CONFIG_DIR';
 
@@ -292,6 +294,36 @@ export async function writeLimitsCache(limits) {
   }
 }
 
+async function writeExtraUsageCache(enabled) {
+  try {
+    await mkdir(CACHE_DIR, { recursive: true, mode: 0o700 });
+    await writeFile(
+      EXTRA_USAGE_CACHE_PATH,
+      JSON.stringify({ timestamp: Date.now(), enabled }, null, 2),
+      { mode: 0o600 }
+    );
+  } catch {
+    // ignore
+  }
+}
+
+async function readExtraUsageCache(maxAgeMinutes, allowStale) {
+  try {
+    const raw = await readFile(EXTRA_USAGE_CACHE_PATH, 'utf-8');
+    const payload = JSON.parse(raw);
+    const ts = typeof payload.timestamp === 'number' ? payload.timestamp : null;
+    const enabled = payload.enabled;
+    if (!ts || typeof enabled !== 'boolean') throw new Error('invalid cache');
+    const ageMs = Date.now() - ts;
+    const maxAgeMs = maxAgeMinutes * 60 * 1000;
+    const stale = ageMs > maxAgeMs;
+    if (stale && !allowStale) return null;
+    return { enabled, stale, ageMinutes: Math.round(ageMs / 60000) };
+  } catch {
+    return null;
+  }
+}
+
 async function readLimitsCache(maxAgeMinutes, allowStale) {
   try {
     const raw = await readFile(LIMITS_CACHE_PATH, 'utf-8');
@@ -393,6 +425,93 @@ export async function fetchUsageLimits(options = {}) {
           errorCode: 'network_error',
         }
       : { limits: null, stale: false, ageMinutes: null, errorCode: 'network_error' };
+  }
+}
+
+export async function fetchExtraUsageStatus(options = {}) {
+  const allowStale =
+    typeof options.allowStale === 'boolean' ? options.allowStale : true;
+  const allowCache =
+    typeof options.allowCache === 'boolean' ? options.allowCache : true;
+  const maxAgeMinutes =
+    typeof options.maxAgeMinutes === 'number'
+      ? options.maxAgeMinutes
+      : DEFAULT_EXTRA_USAGE_CACHE_MINUTES;
+
+  const token = await getOAuthToken();
+  if (!token) {
+    if (!allowCache) return null;
+    const cached = await readExtraUsageCache(maxAgeMinutes, allowStale);
+    return cached
+      ? {
+          enabled: cached.enabled,
+          stale: cached.stale,
+          ageMinutes: cached.ageMinutes,
+          errorCode: 'token_missing',
+        }
+      : { enabled: null, stale: false, ageMinutes: null, errorCode: 'token_missing' };
+  }
+
+  try {
+    const response = await fetch('https://api.anthropic.com/api/oauth/profile', {
+      method: 'GET',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'User-Agent': 'claude-dashboard/active-session-keeper',
+        Authorization: `Bearer ${token}`,
+        'anthropic-beta': 'oauth-2025-04-20',
+      },
+    });
+
+    if (!response.ok) {
+      let errorCode = null;
+      try {
+        const payload = await response.json();
+        errorCode = extractErrorCode(payload);
+      } catch {
+        // ignore
+      }
+      if (!allowCache) return null;
+      const cached = await readExtraUsageCache(maxAgeMinutes, allowStale);
+      return cached
+        ? {
+            enabled: cached.enabled,
+            stale: cached.stale,
+            ageMinutes: cached.ageMinutes,
+            errorCode,
+          }
+        : { enabled: null, stale: false, ageMinutes: null, errorCode };
+    }
+
+    const data = await response.json();
+    const enabled = data?.organization?.has_extra_usage_enabled;
+    if (typeof enabled === 'boolean') {
+      await writeExtraUsageCache(enabled);
+      return { enabled, stale: false, ageMinutes: 0, errorCode: null };
+    }
+
+    if (!allowCache) return null;
+    const cached = await readExtraUsageCache(maxAgeMinutes, allowStale);
+    return cached
+      ? {
+          enabled: cached.enabled,
+          stale: cached.stale,
+          ageMinutes: cached.ageMinutes,
+          errorCode: null,
+        }
+      : { enabled: null, stale: false, ageMinutes: null, errorCode: null };
+  } catch {
+    if (!allowCache) return null;
+    const cached = await readExtraUsageCache(maxAgeMinutes, allowStale);
+    return cached
+      ? {
+          enabled: cached.enabled,
+          stale: cached.stale,
+          ageMinutes: cached.ageMinutes,
+          errorCode: 'network_error',
+        }
+      : { enabled: null, stale: false, ageMinutes: null, errorCode: 'network_error' };
   }
 }
 

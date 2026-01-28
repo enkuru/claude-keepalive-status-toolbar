@@ -5,6 +5,7 @@ import {
   getLatestActivityTimestamp,
   getSessionStartTimestamp,
   fetchUsageLimits,
+  fetchExtraUsageStatus,
   limitOk,
   readState,
   formatAge,
@@ -98,6 +99,15 @@ function formatResetTime(value) {
   return `${days}d ${hours}h ${minutes}m`;
 }
 
+function formatResetTimeWithClock(value) {
+  if (!value) return 'unknown';
+  const ts = new Date(value);
+  if (Number.isNaN(ts.getTime())) return 'unknown';
+  const relative = formatResetTime(value);
+  const clock = ts.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  return `${relative} (${clock})`;
+}
+
 function formatAgeFromMinutes(minutes) {
   if (typeof minutes !== 'number' || !Number.isFinite(minutes)) return 'unknown';
   if (minutes < 60) return `${Math.round(minutes)}m`;
@@ -115,11 +125,30 @@ function formatHistory(history, lastLaunch, maxItems = 3) {
   return items.map((ts) => formatAge(ts)).join(', ');
 }
 
+function formatExtraUsage(info) {
+  let label = 'unknown';
+  let color = '#EF4444';
+  if (typeof info?.enabled === 'boolean') {
+    label = info.enabled ? 'On' : 'Off';
+    color = info.enabled ? '#10B981' : '#9CA3AF';
+  }
+  if (info?.stale) {
+    label = `${label} (cached)`;
+    color = '#F59E0B';
+  }
+  return { label, color };
+}
+
 async function main() {
   const config = getConfigFromEnv();
   const lastActivity = await getLatestActivityTimestamp(config);
   const sessionStart = await getSessionStartTimestamp(config);
   const limitsInfo = await fetchUsageLimits({
+    allowStale: true,
+    allowCache: true,
+    maxAgeMinutes: 360,
+  });
+  const extraUsageInfo = await fetchExtraUsageStatus({
     allowStale: true,
     allowCache: true,
     maxAgeMinutes: 360,
@@ -137,23 +166,13 @@ async function main() {
     const candidate = path.join(repoRoot, 'scripts', 'active-session-keeper.js');
     if (existsSync(candidate)) keeperPath = candidate;
   }
-  const nodePath = resolveNodePath();
-  const runOnceArgs = keeperPath
-    ? [
-        nodePath,
-        keeperPath,
-        '--once',
-        '--active-minutes=0',
-        '--cooldown-minutes=0',
-      ]
-    : null;
-
   const now = Date.now();
   const activeWindowMs = config.activeMinutes * 60 * 1000;
   const isActive = !!(lastActivity && now - lastActivity <= activeWindowMs);
 
   const fiveUtil = limits?.five_hour?.utilization;
   const fiveClamped = clampPercent(fiveUtil);
+  const fiveResetTitle = limits?.five_hour?.resets_at;
   let headerState = 'Idle';
   if (!limits) headerState = 'Unknown';
   else if (fiveClamped !== null && fiveClamped >= 100) headerState = 'Limit';
@@ -161,16 +180,33 @@ async function main() {
   const limitsOk =
     limits && limitOk(limits.five_hour) && limitOk(limits.seven_day);
   const statusColor = pickStatusColor(headerState);
-  const fiveText =
-    fiveClamped === null ? '5h: n/a' : `5h: ${Math.round(fiveClamped)}%`;
+  const fiveFull = limits ? !limitOk(limits.five_hour) : false;
+  const fiveText = fiveFull
+    ? `5h: ${formatResetTime(fiveResetTitle)}`
+    : fiveClamped === null
+    ? '5h: n/a'
+    : `5h: ${Math.round(fiveClamped)}%`;
   const sevenUtil = limits?.seven_day?.utilization;
   const sevenClamped = clampPercent(sevenUtil);
-  const sevenText =
-    sevenClamped === null ? '7d: n/a' : `7d: ${Math.round(sevenClamped)}%`;
+  const sevenResetTitle = limits?.seven_day?.resets_at;
+  const sevenFull = limits ? !limitOk(limits.seven_day) : false;
+  const sevenText = sevenFull
+    ? `7d: ${formatResetTime(sevenResetTitle)}`
+    : sevenClamped === null
+    ? '7d: n/a'
+    : `7d: ${Math.round(sevenClamped)}%`;
   menuLine(
     `Claude ${fiveText}  ${sevenText} | color=${statusColor} font=SF Pro Text size=12`
   );
   menuLine('---');
+  const keepaliveState = state?.pauseUntil && Date.now() < state.pauseUntil
+    ? 'Paused'
+    : 'On';
+  const authState = limitsInfo?.errorCode === 'token_expired' ? 'Token Expired' : 'OK';
+  const limitsState = limitsInfo?.stale ? 'Cached' : limits ? 'Live' : 'Unknown';
+  menuLine(`Health: Auth ${authState} · Limits ${limitsState} · Keepalive ${keepaliveState} | color=#94A3B8`);
+  const extraUsage = formatExtraUsage(extraUsageInfo);
+  menuLine(`Extra usage: ${extraUsage.label} | color=${extraUsage.color}`);
   menuLine(`Status: ${isActive ? 'Active' : 'Idle'} | color=${statusColor}`);
   menuLine(
     `Session start: ${formatAge(sessionStart)}   ·   Last activity: ${formatAge(
@@ -195,11 +231,11 @@ async function main() {
     menuLine(
       `5h limit: ${progressBar(fiveUtil)} (${limitOk(limits.five_hour) ? 'ok' : 'full'}) | color=${fiveColor} font=Menlo`
     );
-    menuLine(`5h resets: ${formatResetTime(fiveReset)} | color=#93C5FD`);
+    menuLine(`5h resets: ${formatResetTimeWithClock(fiveReset)} | color=#93C5FD`);
     menuLine(
       `7d limit: ${progressBar(seven)} (${limitOk(limits.seven_day) ? 'ok' : 'full'}) | color=${sevenColor} font=Menlo`
     );
-    menuLine(`7d resets: ${formatResetTime(sevenReset)} | color=#93C5FD`);
+    menuLine(`7d resets: ${formatResetTimeWithClock(sevenReset)} | color=#93C5FD`);
   } else {
     menuLine('5h limit: n/a | color=#9CA3AF');
     menuLine('7d limit: n/a | color=#9CA3AF');
@@ -215,6 +251,23 @@ async function main() {
   );
 
   menuLine('---');
+  const nodePath = resolveNodePath();
+  const runOnceArgs = keeperPath
+    ? [
+        nodePath,
+        keeperPath,
+        '--once',
+        '--active-minutes=0',
+        '--cooldown-minutes=0',
+      ]
+    : null;
+  const pauseArgs = keeperPath
+    ? [nodePath, keeperPath, '--pause-minutes=30']
+    : null;
+  const resumeArgs = keeperPath
+    ? [nodePath, keeperPath, '--resume']
+    : null;
+
   if (limitsOk && runOnceArgs) {
     menuLine(
       `Send hello now | color=#22C55E bash=${runOnceArgs[0]} param1=${runOnceArgs[1]} param2=${runOnceArgs[2]} param3=${runOnceArgs[3]} param4=${runOnceArgs[4]} terminal=false refresh=true`
@@ -224,6 +277,22 @@ async function main() {
   } else {
     menuLine('Send hello now (limits full) | disabled=true');
   }
+  if (pauseArgs) {
+    menuLine(
+      `Pause keepalive 30m | color=#F59E0B bash=${pauseArgs[0]} param1=${pauseArgs[1]} param2=${pauseArgs[2]} terminal=false refresh=true`
+    );
+  }
+  if (resumeArgs) {
+    menuLine(
+      `Resume keepalive | color=#60A5FA bash=${resumeArgs[0]} param1=${resumeArgs[1]} param2=${resumeArgs[2]} terminal=false refresh=true`
+    );
+  }
+  menuLine(
+    `Open Claude Code | color=#60A5FA bash=/usr/bin/open param1=-a param2=Claude\\ Code terminal=false`
+  );
+  menuLine(
+    `Open keepalive log | color=#94A3B8 bash=/usr/bin/open param1=-a param2=Console.app param3=/tmp/claude-keepalive.err terminal=false`
+  );
   menuLine('Active session keeper status | color=#94A3B8');
 }
 

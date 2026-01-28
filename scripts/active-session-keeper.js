@@ -30,6 +30,8 @@ function parseArgs(argv) {
     helloDelaySeconds: DEFAULTS.helloDelaySeconds,
     cooldownMinutes: DEFAULTS.cooldownMinutes,
     reauthCooldownMinutes: 60,
+    pauseMinutes: null,
+    resume: false,
     maxDepth: DEFAULTS.maxDepth,
     tailBytes: DEFAULTS.tailBytes,
     transcriptPath: null,
@@ -48,6 +50,10 @@ function parseArgs(argv) {
       config.cooldownMinutes = Number(arg.split('=')[1]);
     } else if (arg.startsWith('--reauth-cooldown-minutes=')) {
       config.reauthCooldownMinutes = Number(arg.split('=')[1]);
+    } else if (arg.startsWith('--pause-minutes=')) {
+      config.pauseMinutes = Number(arg.split('=')[1]);
+    } else if (arg === '--resume') {
+      config.resume = true;
     } else if (arg.startsWith('--max-depth=')) {
       config.maxDepth = Number(arg.split('=')[1]);
     } else if (arg.startsWith('--tail-bytes=')) {
@@ -159,6 +165,30 @@ async function tick(config) {
   tickInProgress = true;
 
   try {
+    const state = await readState();
+    if (config.resume) {
+      if (state && typeof state === 'object') {
+        const nextState = { ...state };
+        delete nextState.pauseUntil;
+        await writeState(nextState);
+      }
+      log('Resumed keepalive.');
+      return;
+    }
+    if (config.pauseMinutes && config.pauseMinutes > 0) {
+      const pauseUntil = Date.now() + config.pauseMinutes * 60 * 1000;
+      const nextState = state && typeof state === 'object' ? { ...state } : {};
+      nextState.pauseUntil = pauseUntil;
+      await writeState(nextState);
+      log('Paused keepalive.', { minutes: config.pauseMinutes });
+      return;
+    }
+
+    if (state?.pauseUntil && Date.now() < state.pauseUntil) {
+      log('Keepalive paused; skipping tick.');
+      return;
+    }
+
     const lastActivity = await getLatestActivityTimestamp(config);
     const now = Date.now();
     const activeWindowMs = config.activeMinutes * 60 * 1000;
@@ -183,7 +213,6 @@ async function tick(config) {
     const limits = limitsInfo.limits;
 
     if (limitsInfo.errorCode === 'token_expired') {
-      const state = await readState();
       const reauthCooldownMs = config.reauthCooldownMinutes * 60 * 1000;
       if (state?.lastReauthOpen && now - state.lastReauthOpen < reauthCooldownMs) {
         log('Re-auth cooldown active; skipping app launch.');
@@ -211,7 +240,6 @@ async function tick(config) {
       return;
     }
 
-    const state = await readState();
     const cooldownMs = config.cooldownMinutes * 60 * 1000;
     if (state?.lastLaunch && now - state.lastLaunch < cooldownMs) {
       log('Cooldown active; skipping.');
