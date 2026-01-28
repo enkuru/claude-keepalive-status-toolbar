@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 
 import { spawn } from 'child_process';
+import { existsSync } from 'fs';
+import os from 'os';
+import path from 'path';
 import {
   DEFAULTS,
   getLatestActivityTimestamp,
@@ -26,6 +29,7 @@ function parseArgs(argv) {
     activeMinutes: DEFAULTS.activeMinutes,
     helloDelaySeconds: DEFAULTS.helloDelaySeconds,
     cooldownMinutes: DEFAULTS.cooldownMinutes,
+    reauthCooldownMinutes: 60,
     maxDepth: DEFAULTS.maxDepth,
     tailBytes: DEFAULTS.tailBytes,
     transcriptPath: null,
@@ -42,6 +46,8 @@ function parseArgs(argv) {
       config.helloDelaySeconds = Number(arg.split('=')[1]);
     } else if (arg.startsWith('--cooldown-minutes=')) {
       config.cooldownMinutes = Number(arg.split('=')[1]);
+    } else if (arg.startsWith('--reauth-cooldown-minutes=')) {
+      config.reauthCooldownMinutes = Number(arg.split('=')[1]);
     } else if (arg.startsWith('--max-depth=')) {
       config.maxDepth = Number(arg.split('=')[1]);
     } else if (arg.startsWith('--tail-bytes=')) {
@@ -54,11 +60,56 @@ function parseArgs(argv) {
   return config;
 }
 
+function resolveClaudeCommand() {
+  const envCmd = process.env.CLAUDE_CMD;
+  if (envCmd && existsSync(envCmd)) return envCmd;
+
+  const home = os.homedir();
+  const candidates = [
+    path.join(home, '.local', 'bin', 'claude'),
+    '/opt/homebrew/bin/claude',
+    '/usr/local/bin/claude',
+    '/usr/bin/claude',
+  ];
+  for (const candidate of candidates) {
+    if (existsSync(candidate)) return candidate;
+  }
+  return envCmd || 'claude';
+}
+
 function getClaudeCommand() {
-  const cmd = process.env.CLAUDE_CMD || 'claude';
+  const cmd = resolveClaudeCommand();
   const argsEnv = process.env.CLAUDE_ARGS || '';
   const args = argsEnv.split(' ').map((s) => s.trim()).filter(Boolean);
   return { cmd, args };
+}
+
+function getClaudeAppName() {
+  return process.env.CLAUDE_APP || 'Claude Code';
+}
+
+function launchClaudeApp(dryRun) {
+  const appName = getClaudeAppName();
+  if (dryRun) {
+    log('DRY RUN: would open app', appName);
+    return Promise.resolve(true);
+  }
+
+  return new Promise((resolve) => {
+    const child = spawn('open', ['-a', appName], { stdio: 'ignore', detached: true });
+    let resolved = false;
+    const finish = (ok) => {
+      if (resolved) return;
+      resolved = true;
+      resolve(ok);
+    };
+    child.once('spawn', () => finish(true));
+    child.once('error', (error) => {
+      log('Failed to open app.', { error: error?.message || String(error) });
+      finish(false);
+    });
+    child.unref();
+  });
 }
 
 function launchClaudeHello(delaySeconds, dryRun) {
@@ -66,24 +117,39 @@ function launchClaudeHello(delaySeconds, dryRun) {
 
   if (dryRun) {
     log('DRY RUN: would spawn', cmd, args.join(' '));
-    return;
+    return Promise.resolve(true);
   }
 
-  const child = spawn(cmd, args, {
-    stdio: ['pipe', 'ignore', 'ignore'],
-    detached: true,
+  return new Promise((resolve) => {
+    const child = spawn(cmd, args, {
+      stdio: ['pipe', 'ignore', 'ignore'],
+      detached: true,
+    });
+
+    let resolved = false;
+    const finish = (ok) => {
+      if (resolved) return;
+      resolved = true;
+      resolve(ok);
+    };
+
+    child.once('spawn', () => finish(true));
+    child.once('error', (error) => {
+      log('Failed to spawn claude.', { error: error?.message || String(error) });
+      finish(false);
+    });
+
+    setTimeout(() => {
+      try {
+        child.stdin.write('hello\n');
+        child.stdin.end();
+      } catch {
+        // ignore
+      }
+    }, delaySeconds * 1000);
+
+    child.unref();
   });
-
-  setTimeout(() => {
-    try {
-      child.stdin.write('hello\n');
-      child.stdin.end();
-    } catch {
-      // ignore
-    }
-  }, delaySeconds * 1000);
-
-  child.unref();
 }
 
 let tickInProgress = false;
@@ -116,6 +182,23 @@ async function tick(config) {
     }
     const limits = limitsInfo.limits;
 
+    if (limitsInfo.errorCode === 'token_expired') {
+      const state = await readState();
+      const reauthCooldownMs = config.reauthCooldownMinutes * 60 * 1000;
+      if (state?.lastReauthOpen && now - state.lastReauthOpen < reauthCooldownMs) {
+        log('Re-auth cooldown active; skipping app launch.');
+      } else {
+        const opened = await launchClaudeApp(config.dryRun);
+        if (opened) {
+          const nextState = state && typeof state === 'object' ? { ...state } : {};
+          nextState.lastReauthOpen = now;
+          await writeState(nextState);
+          log('Opened Claude Code for re-auth.');
+        }
+      }
+      return;
+    }
+
     const okFive = limitOk(limits.five_hour);
     const okSeven = limitOk(limits.seven_day);
 
@@ -135,10 +218,17 @@ async function tick(config) {
       return;
     }
 
-    launchClaudeHello(config.helloDelaySeconds, config.dryRun);
+    const launched = await launchClaudeHello(config.helloDelaySeconds, config.dryRun);
+    if (!launched) {
+      log('Claude command not available; skipping state update.');
+      return;
+    }
     const history = Array.isArray(state?.history) ? state.history.slice(-19) : [];
     history.push(now);
-    await writeState({ lastLaunch: now, history });
+    const nextState = state && typeof state === 'object' ? { ...state } : {};
+    nextState.lastLaunch = now;
+    nextState.history = history;
+    await writeState(nextState);
     log('Launched Claude with hello prompt.');
   } finally {
     tickInProgress = false;

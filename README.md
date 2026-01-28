@@ -87,6 +87,7 @@ It scans JSONL files and uses the most recent timestamp found.
 - `--active-minutes=10`
 - `--hello-delay-seconds=5`
 - `--cooldown-minutes=10`
+- `--reauth-cooldown-minutes=60`
 - `--transcript-path=/path/to/file.jsonl`
 - `--once`
 - `--dry-run`
@@ -95,6 +96,7 @@ It scans JSONL files and uses the most recent timestamp found.
 
 - `CLAUDE_CMD` (default: `claude`)
 - `CLAUDE_ARGS` (space-separated args for the `claude` process)
+- `CLAUDE_APP` (default: `Claude Code`) — app name used for auto re-auth launch
 - `CLAUDE_TRANSCRIPT_DIRS` (path-delimited list of extra dirs)
 - `ACTIVE_MINUTES`, `TRANSCRIPT_PATH`, `MAX_DEPTH`, `TAIL_BYTES`
 - `KEEPALIVE_PATH` or `KEEPALIVE_REPO` (used by the menu button to find the keepalive script)
@@ -107,6 +109,7 @@ It scans JSONL files and uses the most recent timestamp found.
   - Either limits are full, or the keepalive script path can’t be found.
 - **Limits show “Unknown” or “Cached” after sleep**
   - This usually means **Keychain access is blocked** or the **OAuth token expired**.
+  - When the API reports **token expired**, the keepalive will auto‑open **Claude Code** (once per hour) so you can re‑auth.
   - **Re-enable Keychain access**:
     1. Open **Keychain Access** → unlock “login” keychain
     2. Search for **“Claude Code-credentials”**

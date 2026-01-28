@@ -174,6 +174,9 @@ async function main() {
       `Limits: cached (${formatAgeFromMinutes(limitsInfo.ageMinutes)} ago) | color=#F59E0B`
     );
   }
+  if (limitsInfo?.errorCode === 'token_expired') {
+    menuLine('Auth: token expired (open Claude Code) | color=#F97316');
+  }
 
   if (limits) {
     const seven = limits.seven_day?.utilization;

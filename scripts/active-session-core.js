@@ -309,6 +309,16 @@ async function readLimitsCache(maxAgeMinutes, allowStale) {
   }
 }
 
+function extractErrorCode(payload) {
+  if (!payload) return null;
+  return (
+    payload?.error?.details?.error_code ||
+    payload?.details?.error_code ||
+    payload?.error_code ||
+    null
+  );
+}
+
 export async function fetchUsageLimits(options = {}) {
   const allowStale =
     typeof options.allowStale === 'boolean' ? options.allowStale : true;
@@ -324,8 +334,13 @@ export async function fetchUsageLimits(options = {}) {
     if (!allowCache) return null;
     const cached = await readLimitsCache(maxAgeMinutes, allowStale);
     return cached
-      ? { limits: cached.limits, stale: cached.stale, ageMinutes: cached.ageMinutes }
-      : null;
+      ? {
+          limits: cached.limits,
+          stale: cached.stale,
+          ageMinutes: cached.ageMinutes,
+          errorCode: 'token_missing',
+        }
+      : { limits: null, stale: false, ageMinutes: null, errorCode: 'token_missing' };
   }
 
   try {
@@ -341,11 +356,23 @@ export async function fetchUsageLimits(options = {}) {
     });
 
     if (!response.ok) {
+      let errorCode = null;
+      try {
+        const payload = await response.json();
+        errorCode = extractErrorCode(payload);
+      } catch {
+        // ignore
+      }
       if (!allowCache) return null;
       const cached = await readLimitsCache(maxAgeMinutes, allowStale);
       return cached
-        ? { limits: cached.limits, stale: cached.stale, ageMinutes: cached.ageMinutes }
-        : null;
+        ? {
+            limits: cached.limits,
+            stale: cached.stale,
+            ageMinutes: cached.ageMinutes,
+            errorCode,
+          }
+        : { limits: null, stale: false, ageMinutes: null, errorCode };
     }
 
     const data = await response.json();
@@ -354,13 +381,18 @@ export async function fetchUsageLimits(options = {}) {
       seven_day: data.seven_day ?? null,
     };
     await writeLimitsCache(limits);
-    return { limits, stale: false, ageMinutes: 0 };
+    return { limits, stale: false, ageMinutes: 0, errorCode: null };
   } catch {
     if (!allowCache) return null;
     const cached = await readLimitsCache(maxAgeMinutes, allowStale);
     return cached
-      ? { limits: cached.limits, stale: cached.stale, ageMinutes: cached.ageMinutes }
-      : null;
+      ? {
+          limits: cached.limits,
+          stale: cached.stale,
+          ageMinutes: cached.ageMinutes,
+          errorCode: 'network_error',
+        }
+      : { limits: null, stale: false, ageMinutes: null, errorCode: 'network_error' };
   }
 }
 
