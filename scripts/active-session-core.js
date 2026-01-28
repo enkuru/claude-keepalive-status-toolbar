@@ -148,6 +148,42 @@ export async function readLastTranscriptTimestamp(filePath, tailBytes) {
   }
 }
 
+export async function readLastTranscriptCwd(filePath, tailBytes) {
+  try {
+    const fileStat = await stat(filePath);
+    const readSize = Math.min(fileStat.size, tailBytes);
+    const start = Math.max(0, fileStat.size - readSize);
+
+    const fh = await open(filePath, 'r');
+    try {
+      const buffer = Buffer.alloc(readSize);
+      await fh.read(buffer, 0, readSize, start);
+      const text = buffer.toString('utf-8');
+      const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+
+      for (let i = lines.length - 1; i >= 0; i--) {
+        try {
+          const entry = JSON.parse(lines[i]);
+          const cwd =
+            entry?.cwd ||
+            entry?.message?.cwd ||
+            entry?.workspace?.current_dir ||
+            entry?.data?.cwd;
+          if (cwd && typeof cwd === 'string') return cwd;
+        } catch {
+          // ignore malformed line
+        }
+      }
+    } finally {
+      await fh.close();
+    }
+
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export async function getLatestActivityTimestamp(config) {
   if (config.transcriptPath) {
     return await readLastTranscriptTimestamp(config.transcriptPath, config.tailBytes);
@@ -158,6 +194,18 @@ export async function getLatestActivityTimestamp(config) {
   if (!latest) return null;
 
   return await readLastTranscriptTimestamp(latest.path, config.tailBytes);
+}
+
+export async function getLatestActivityCwd(config) {
+  if (config.transcriptPath) {
+    return await readLastTranscriptCwd(config.transcriptPath, config.tailBytes);
+  }
+
+  const dirs = getSearchDirs();
+  const latest = await findLatestTranscriptFile(dirs, config.maxDepth);
+  if (!latest) return null;
+
+  return await readLastTranscriptCwd(latest.path, config.tailBytes);
 }
 
 export async function readSessionStartTimestamp(filePath, headBytes) {

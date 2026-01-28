@@ -3,6 +3,7 @@
 import {
   DEFAULTS,
   getLatestActivityTimestamp,
+  getLatestActivityCwd,
   getSessionStartTimestamp,
   fetchUsageLimits,
   fetchExtraUsageStatus,
@@ -10,7 +11,9 @@ import {
   readState,
   formatAge,
 } from '../scripts/active-session-core.js';
+import { updateUsageHistory } from '../scripts/usage-history.js';
 import { existsSync } from 'fs';
+import { writeFileSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -40,6 +43,46 @@ function resolveNodePath() {
     if (existsSync(candidate)) return candidate;
   }
   return 'node';
+}
+
+function resolveClaudeCliPath() {
+  const envCmd = process.env.CLAUDE_CMD;
+  if (envCmd && envCmd.includes('/') && existsSync(envCmd)) return envCmd;
+  const candidates = [
+    path.join(process.env.HOME || '', '.local', 'bin', 'claude'),
+    '/opt/homebrew/bin/claude',
+    '/usr/local/bin/claude',
+    '/usr/bin/claude',
+  ];
+  for (const candidate of candidates) {
+    if (candidate && existsSync(candidate)) return candidate;
+  }
+  return envCmd || 'claude';
+}
+
+function shellEscape(value) {
+  if (typeof value !== 'string' || value.length === 0) return "''";
+  return `'${value.replace(/'/g, `'\"'\"'`)}'`;
+}
+
+function resolveClaudeAppOpenArgs() {
+  const envPath = process.env.CLAUDE_APP_PATH;
+  if (envPath && existsSync(envPath)) {
+    return ['/usr/bin/open', [envPath]];
+  }
+  const envApp = process.env.CLAUDE_APP || 'Claude Code';
+  const candidates = [
+    '/Applications/Claude Code.app',
+    '/Applications/Claude.app',
+    path.join(process.env.HOME || '', 'Applications', 'Claude Code.app'),
+    path.join(process.env.HOME || '', 'Applications', 'Claude.app'),
+  ];
+  for (const candidate of candidates) {
+    if (candidate && existsSync(candidate)) {
+      return ['/usr/bin/open', [candidate]];
+    }
+  }
+  return ['/usr/bin/open', ['-a', envApp]];
 }
 
 function pickColorByPercent(percent) {
@@ -125,6 +168,11 @@ function formatHistory(history, lastLaunch, maxItems = 3) {
   return items.map((ts) => formatAge(ts)).join(', ');
 }
 
+function formatUsd(value) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return 'n/a';
+  return `$${value.toFixed(2)}`;
+}
+
 function formatExtraUsage(info) {
   let label = 'unknown';
   let color = '#EF4444';
@@ -139,15 +187,31 @@ function formatExtraUsage(info) {
   return { label, color };
 }
 
+function ensureLogFile(filePath) {
+  if (existsSync(filePath)) return;
+  try {
+    writeFileSync(filePath, '', { mode: 0o600 });
+  } catch {
+    // ignore
+  }
+}
+
 async function main() {
   const config = getConfigFromEnv();
   const lastActivity = await getLatestActivityTimestamp(config);
+  const lastCwd = await getLatestActivityCwd(config);
   const sessionStart = await getSessionStartTimestamp(config);
   const limitsInfo = await fetchUsageLimits({
     allowStale: true,
     allowCache: true,
     maxAgeMinutes: 360,
   });
+  let usageSummary = null;
+  try {
+    usageSummary = await updateUsageHistory();
+  } catch {
+    usageSummary = null;
+  }
   const extraUsageInfo = await fetchExtraUsageStatus({
     allowStale: true,
     allowCache: true,
@@ -195,9 +259,12 @@ async function main() {
     : sevenClamped === null
     ? '7d: n/a'
     : `7d: ${Math.round(sevenClamped)}%`;
-  menuLine(
-    `Claude ${fiveText}  ${sevenText} | color=${statusColor} font=SF Pro Text size=12`
-  );
+  let titleUsage = null;
+  if (usageSummary?.ok && Number.isFinite(usageSummary.dayCost)) {
+    titleUsage = formatUsd(usageSummary.dayCost);
+  }
+  const titleParts = ['Claude', titleUsage || null, fiveText, sevenText].filter(Boolean);
+  menuLine(`${titleParts.join('  ')} | color=${statusColor} font=SF Pro Text size=12`);
   menuLine('---');
   const keepaliveState = state?.pauseUntil && Date.now() < state.pauseUntil
     ? 'Paused'
@@ -220,6 +287,45 @@ async function main() {
   }
   if (limitsInfo?.errorCode === 'token_expired') {
     menuLine('Auth: token expired (open Claude Code) | color=#F97316');
+  }
+
+  if (usageSummary?.ok) {
+    const missingPricing = usageSummary.missingPricing?.length > 0;
+    const pricingLoaded = usageSummary.pricingLoaded;
+    const usageColor = missingPricing ? '#F59E0B' : '#10B981';
+    if (!pricingLoaded) {
+      menuLine('Usage: set pricing | color=#F59E0B');
+    } else {
+      const note = missingPricing ? ' (pricing missing)' : '';
+      menuLine(
+        `Usage today: ${formatUsd(usageSummary.dayCost)}${note} | color=${usageColor}`
+      );
+      menuLine(
+        `Usage 3d: ${formatUsd(usageSummary.last3Cost)}${note} | color=${usageColor}`
+      );
+      menuLine(
+        `Usage ${usageSummary.monthKey}: ${formatUsd(usageSummary.monthCost)}${note} | color=${usageColor}`
+      );
+      if (Number.isFinite(usageSummary.allTimeCost)) {
+        menuLine(
+          `Usage all-time: ${formatUsd(usageSummary.allTimeCost)}${note} | color=${usageColor}`
+        );
+      }
+    }
+    if (usageSummary.historyPath) {
+      menuLine(
+        `Open usage history | color=#60A5FA bash=/usr/bin/open param1=${usageSummary.historyPath} terminal=false`
+      );
+    }
+  } else if (usageSummary?.ok === false) {
+    const reason = usageSummary?.reason;
+    if (reason === 'ccusage_missing') {
+      menuLine('Usage: ccusage missing | color=#9CA3AF');
+    } else if (reason === 'stats_missing') {
+      menuLine('Usage: stats-cache missing | color=#9CA3AF');
+    } else {
+      menuLine('Usage: unavailable | color=#9CA3AF');
+    }
   }
 
   if (limits) {
@@ -287,11 +393,41 @@ async function main() {
       `Resume keepalive | color=#60A5FA bash=${resumeArgs[0]} param1=${resumeArgs[1]} param2=${resumeArgs[2]} terminal=false refresh=true`
     );
   }
+  const [openCmd, openArgs] = resolveClaudeAppOpenArgs();
+  const openParams = openArgs
+    .map((arg, index) => `param${index + 1}=${arg}`)
+    .join(' ');
+  menuLine(`Open Claude Code app | color=#60A5FA bash=${openCmd} ${openParams} terminal=false`);
+  const cliPath = resolveClaudeCliPath();
+  const cliArgs = (process.env.CLAUDE_ARGS || '').split(' ').map((s) => s.trim()).filter(Boolean);
+  const openCliScript = path.join(repoRoot, 'scripts', 'open-claude-cli.sh');
+  if (existsSync(openCliScript)) {
+    const cwdParam = lastCwd || '.';
+    const params = [
+      `param1=${cwdParam}`,
+      `param2=${cliPath}`,
+      ...cliArgs.map((arg, index) => `param${index + 3}=${arg}`),
+    ].join(' ');
+    menuLine(
+      `Open Claude CLI (last dir) | color=#60A5FA bash=${openCliScript} ${params} terminal=true`
+    );
+  } else {
+    const cliCmd = [shellEscape(cliPath), cliArgs.join(' ')].filter(Boolean).join(' ');
+    if (lastCwd) {
+      const cmd = `cd ${shellEscape(lastCwd)} && ${cliCmd}`;
+      menuLine(
+        `Open Claude CLI (last dir) | color=#60A5FA bash=/bin/sh param1=-lc param2=${cmd} terminal=true`
+      );
+    } else {
+      menuLine(
+        `Open Claude CLI | color=#60A5FA bash=/bin/sh param1=-lc param2=${cliCmd} terminal=true`
+      );
+    }
+  }
+  const keepaliveLogPath = '/tmp/claude-keepalive.err';
+  ensureLogFile(keepaliveLogPath);
   menuLine(
-    `Open Claude Code | color=#60A5FA bash=/usr/bin/open param1=-a param2=Claude\\ Code terminal=false`
-  );
-  menuLine(
-    `Open keepalive log | color=#94A3B8 bash=/usr/bin/open param1=-a param2=Console.app param3=/tmp/claude-keepalive.err terminal=false`
+    `Open keepalive log | color=#94A3B8 bash=/usr/bin/open param1=-a param2=Console.app param3=${keepaliveLogPath} terminal=false`
   );
   menuLine('Active session keeper status | color=#94A3B8');
 }

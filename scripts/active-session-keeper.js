@@ -68,8 +68,6 @@ function parseArgs(argv) {
 
 function resolveClaudeCommand() {
   const envCmd = process.env.CLAUDE_CMD;
-  if (envCmd && existsSync(envCmd)) return envCmd;
-
   const home = os.homedir();
   const candidates = [
     path.join(home, '.local', 'bin', 'claude'),
@@ -77,10 +75,18 @@ function resolveClaudeCommand() {
     '/usr/local/bin/claude',
     '/usr/bin/claude',
   ];
+  const extraDirs = candidates.map((p) => path.dirname(p));
+
+  if (envCmd) {
+    if (envCmd.includes('/') && existsSync(envCmd)) return envCmd;
+    const resolved = resolveCommandInPath(envCmd, extraDirs);
+    if (resolved) return resolved;
+  }
+
   for (const candidate of candidates) {
     if (existsSync(candidate)) return candidate;
   }
-  return envCmd || 'claude';
+  return resolveCommandInPath('claude', extraDirs) || envCmd || 'claude';
 }
 
 function getClaudeCommand() {
@@ -88,6 +94,18 @@ function getClaudeCommand() {
   const argsEnv = process.env.CLAUDE_ARGS || '';
   const args = argsEnv.split(' ').map((s) => s.trim()).filter(Boolean);
   return { cmd, args };
+}
+
+function resolveCommandInPath(command, extraDirs = []) {
+  if (!command) return null;
+  if (command.includes('/') && existsSync(command)) return command;
+  const envPath = process.env.PATH || '';
+  const dirs = [...new Set([...extraDirs, ...envPath.split(':').filter(Boolean)])];
+  for (const dir of dirs) {
+    const full = path.join(dir, command);
+    if (existsSync(full)) return full;
+  }
+  return null;
 }
 
 function getClaudeAppName() {
@@ -127,9 +145,18 @@ function launchClaudeHello(delaySeconds, dryRun) {
   }
 
   return new Promise((resolve) => {
+    const envPathParts = [
+      process.env.PATH,
+      path.join(os.homedir(), '.local', 'bin'),
+      '/opt/homebrew/bin',
+      '/usr/local/bin',
+      '/usr/bin',
+    ].filter(Boolean);
+    const env = { ...process.env, PATH: Array.from(new Set(envPathParts)).join(':') };
     const child = spawn(cmd, args, {
       stdio: ['pipe', 'ignore', 'ignore'],
       detached: true,
+      env,
     });
 
     let resolved = false;

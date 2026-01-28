@@ -3,6 +3,7 @@
 A lightweight macOS menu bar status (SwiftBar) + keepalive loop for Claude Code.
 
 - **Menu bar**: live activity status, session start, last activity age, rate-limit progress bars, reset times, extra usage on/off, and hello history.
+- **Usage history**: local cost rollups (last 3 days + current month) stored in a persistent cache.
 - **Keepalive**: every 10 minutes, if no recent activity and both 5h + 7d limits are under 100%, it spawns `claude` and sends `hello` after 5 seconds.
 - **Manual button**: “Send hello now” appears in the menu (only enabled when limits are OK).
 
@@ -79,6 +80,7 @@ It scans JSONL files and uses the most recent timestamp found.
 - **5h limit / 7d limit**: progress bars + %
 - **5h resets / 7d resets**: time until reset
 - **Extra usage**: On / Off (from OAuth profile)
+- **Usage 3d / Usage YYYY-MM**: cost rollups from the selected cost source.
 - **Send hello now**: manual trigger (only if limits OK)
 - **Pause keepalive 30m** / **Resume keepalive**
 
@@ -103,6 +105,13 @@ It scans JSONL files and uses the most recent timestamp found.
 - `CLAUDE_ARGS` (space-separated args for the `claude` process)
 - `CLAUDE_APP` (default: `Claude Code`) — app name used for auto re-auth launch
 - `CLAUDE_TRANSCRIPT_DIRS` (path-delimited list of extra dirs)
+- `CLAUDE_STATS_CACHE_PATH` (default: `~/.claude/stats-cache.json`)
+- `CLAUDE_PRICING_PATH` (default: `config/pricing.json`)
+- `USAGE_COST_SOURCE` (default: `ccusage`; options: `ccusage`, `pricing` **(beta)**)
+- `CCUSAGE_CMD` (optional, default: `ccusage`)
+- `CCUSAGE_ARGS` (optional extra args for ccusage)
+- `CCUSAGE_CACHE_MINUTES` (default: `0`, runs ccusage every refresh)
+- `CACHE_WRITE_MODE` (pricing mode: `5m` or `1h`, default `5m`)
 - `ACTIVE_MINUTES`, `TRANSCRIPT_PATH`, `MAX_DEPTH`, `TAIL_BYTES`
 - `KEEPALIVE_PATH` or `KEEPALIVE_REPO` (used by the menu button to find the keepalive script)
 
@@ -110,6 +119,20 @@ It scans JSONL files and uses the most recent timestamp found.
 
 - **“Last activity: unknown”**
   - Ensure you have `~/.claude/projects` or `~/.config/claude/projects` with JSONL files.
+  
+- **Pricing mode is beta**
+  - `USAGE_COST_SOURCE=pricing` uses local stats and inferred cache pricing.
+  - Costs can drift if pricing changes or cache mode differs.
+  - We auto-refresh pricing monthly from the official docs.
+  
+- **Usage cost looks wrong**
+  - Update `config/pricing.json` to current rates (or wait for auto-refresh).
+  - The history is stored at `~/.cache/claude-dashboard/usage-history.json`.
+  - Install `ccusage` and it will be used automatically for better totals:
+    ```
+    npm i -g ccusage
+    ```
+  - If using **pricing** mode, the plugin auto-refreshes pricing monthly from the official docs.
 - **“Send hello now” is disabled**
   - Either limits are full, or the keepalive script path can’t be found.
 - **Limits show “Unknown” or “Cached” after sleep**
