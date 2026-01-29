@@ -393,6 +393,9 @@ async function main() {
   const resumeArgs = keeperPath
     ? [nodePath, keeperPath, '--resume']
     : null;
+  const stopArgs = keeperPath
+    ? [nodePath, keeperPath, '--stop']
+    : null;
 
   if (limitsOk && runOnceArgs) {
     menuLine(
@@ -411,6 +414,11 @@ async function main() {
   if (pauseArgs) {
     menuLine(
       `Pause keepalive 30m | color=#F59E0B bash=${pauseArgs[0]} param1=${pauseArgs[1]} param2=${pauseArgs[2]} terminal=false refresh=true`
+    );
+  }
+  if (stopArgs) {
+    menuLine(
+      `Stop keepalive | color=#EF4444 bash=${stopArgs[0]} param1=${stopArgs[1]} param2=${stopArgs[2]} terminal=false refresh=true`
     );
   }
   if (resumeArgs) {

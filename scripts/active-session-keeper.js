@@ -34,6 +34,7 @@ function parseArgs(argv) {
     resume: false,
     force: false,
     ignoreUtilization: false,
+    stop: false,
     maxDepth: DEFAULTS.maxDepth,
     tailBytes: DEFAULTS.tailBytes,
     transcriptPath: null,
@@ -60,6 +61,8 @@ function parseArgs(argv) {
       config.force = true;
     } else if (arg === '--ignore-utilization') {
       config.ignoreUtilization = true;
+    } else if (arg === '--stop') {
+      config.stop = true;
     } else if (arg.startsWith('--max-depth=')) {
       config.maxDepth = Number(arg.split('=')[1]);
     } else if (arg.startsWith('--tail-bytes=')) {
@@ -203,9 +206,17 @@ async function tick(config) {
       if (state && typeof state === 'object') {
         const nextState = { ...state };
         delete nextState.pauseUntil;
+        delete nextState.stopUntil;
         await writeState(nextState);
       }
       log('Resumed keepalive.');
+      return;
+    }
+    if (config.stop) {
+      const nextState = state && typeof state === 'object' ? { ...state } : {};
+      nextState.stopUntil = Infinity;
+      await writeState(nextState);
+      log('Stopped keepalive.');
       return;
     }
     if (config.pauseMinutes && config.pauseMinutes > 0) {
@@ -219,6 +230,10 @@ async function tick(config) {
 
     if (state?.pauseUntil && Date.now() < state.pauseUntil) {
       log('Keepalive paused; skipping tick.');
+      return;
+    }
+    if (state?.stopUntil === Infinity) {
+      log('Keepalive stopped; skipping tick.');
       return;
     }
 

@@ -95,6 +95,7 @@ It scans JSONL files and uses the most recent timestamp found.
 - `--reauth-cooldown-minutes=60`
 - `--pause-minutes=30`
 - `--resume`
+- `--stop`
 - `--transcript-path=/path/to/file.jsonl`
 - `--once`
 - `--dry-run`
