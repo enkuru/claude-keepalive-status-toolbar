@@ -8,18 +8,14 @@ import { fileURLToPath } from 'url';
 import { spawnSync } from 'child_process';
 
 const HOME = os.homedir();
-const DEFAULT_STATS_PATH = path.join(HOME, '.claude', 'stats-cache.json');
 const CACHE_DIR = path.join(HOME, '.cache', 'claude-dashboard');
 const DEFAULT_HISTORY_PATH = path.join(CACHE_DIR, 'usage-history.json');
 const CCUSAGE_CACHE_PATH = path.join(CACHE_DIR, 'ccusage-cache.json');
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_PRICING_PATH = path.resolve(SCRIPT_DIR, '..', 'config', 'pricing.json');
 const DEFAULT_CCUSAGE_CACHE_MINUTES = 0;
-const DEFAULT_COST_SOURCE = 'ccusage';
 const PRICING_REFRESH_DAYS = 30;
 const PRICING_REFRESH_RETRY_HOURS = 12;
-
-const TOKEN_KEYS = ['input', 'output', 'cacheRead', 'cacheWrite'];
 
 function toLocalDateKey(date) {
   const year = date.getFullYear();
@@ -34,12 +30,6 @@ function toLocalMonthKey(date) {
   return `${year}-${month}`;
 }
 
-function clampDelta(current, previous) {
-  if (typeof current !== 'number' || !Number.isFinite(current)) return 0;
-  if (typeof previous !== 'number' || !Number.isFinite(previous)) return current;
-  const delta = current - previous;
-  return delta < 0 ? current : delta;
-}
 
 function readJsonSafe(filePath) {
   return readFile(filePath, 'utf-8').then((raw) => JSON.parse(raw)).catch(() => null);
@@ -79,29 +69,20 @@ function getCacheWriteRate(pricing, baseInput, modelRates) {
   return baseInput * multiplier;
 }
 
-function normalizeTotals(modelUsage = {}) {
-  const totals = {};
-  for (const [model, usage] of Object.entries(modelUsage)) {
-    totals[model] = {
-      input: Number(usage?.inputTokens) || 0,
-      output: Number(usage?.outputTokens) || 0,
-      cacheRead: Number(usage?.cacheReadInputTokens) || 0,
-      cacheWrite: Number(usage?.cacheCreationInputTokens) || 0,
-    };
-  }
-  return totals;
+
+function addModelTokens(target, delta) {
+  target.input = (target.input || 0) + (delta.input || 0);
+  target.output = (target.output || 0) + (delta.output || 0);
+  target.cacheRead = (target.cacheRead || 0) + (delta.cacheRead || 0);
+  target.cacheWrite = (target.cacheWrite || 0) + (delta.cacheWrite || 0);
 }
 
-function addTokens(target, delta) {
-  for (const key of TOKEN_KEYS) {
-    target[key] = (target[key] || 0) + (delta[key] || 0);
+function mergeModelMap(target, source) {
+  if (!source) return;
+  for (const [model, tokens] of Object.entries(source)) {
+    if (!target[model]) target[model] = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+    addModelTokens(target[model], tokens);
   }
-}
-
-function addModelTokens(target, model, delta) {
-  if (!target.models) target.models = {};
-  if (!target.models[model]) target.models[model] = {};
-  addTokens(target.models[model], delta);
 }
 
 function computeCost(deltaByModel, pricing) {
@@ -129,6 +110,12 @@ function computeCost(deltaByModel, pricing) {
   }
 
   return { total, perModel, missing };
+}
+
+function computeCostFromModels(models, pricing) {
+  if (!models || !pricing) return { total: 0, missing: [] };
+  const { total, missing } = computeCost(models, pricing);
+  return { total, missing };
 }
 
 function trimHistoryKeys(obj, keepCount) {
@@ -227,11 +214,6 @@ async function refreshPricingIfStale(pricingPath) {
   }
 
   return nextPricing;
-}
-
-function getCostSource() {
-  const raw = process.env.USAGE_COST_SOURCE || DEFAULT_COST_SOURCE;
-  return raw.toLowerCase();
 }
 
 function splitCommand(cmd) {
@@ -356,6 +338,8 @@ function parseCcusageDaily(payload) {
       outputTokens: Number(row.outputTokens) || 0,
       cacheReadTokens: Number(row.cacheReadTokens) || 0,
       cacheCreationTokens: Number(row.cacheCreationTokens) || 0,
+      modelBreakdowns: Array.isArray(row.modelBreakdowns) ? row.modelBreakdowns : null,
+      modelsUsed: Array.isArray(row.modelsUsed) ? row.modelsUsed : null,
     }));
 }
 
@@ -420,7 +404,7 @@ async function fetchCcusageSummary(now) {
     }
   }
 
-  const dailyRaw = runCcusage(['daily', '--json']);
+  const dailyRaw = runCcusage(['daily', '--json', '--breakdown']);
   if (!dailyRaw) return null;
 
   let dailyPayload = null;
@@ -450,121 +434,78 @@ async function fetchCcusageSummary(now) {
   return data;
 }
 
+function computeMonthlyFromDaily(dailyMap) {
+  const monthly = {};
+  for (const [dayKey, entry] of Object.entries(dailyMap || {})) {
+    if (!dayKey || !entry?.models) continue;
+    const monthKey = dayKey.slice(0, 7);
+    if (!monthly[monthKey]) {
+      monthly[monthKey] = { models: {}, source: entry.source || 'unknown' };
+    }
+    mergeModelMap(monthly[monthKey].models, entry.models);
+    monthly[monthKey].updatedAt = entry.updatedAt || monthly[monthKey].updatedAt;
+  }
+  return monthly;
+}
+
 export async function updateUsageHistory(options = {}) {
-  const statsPath = options.statsPath || process.env.CLAUDE_STATS_CACHE_PATH || DEFAULT_STATS_PATH;
   const historyPath = options.historyPath || DEFAULT_HISTORY_PATH;
   const pricingPath = options.pricingPath || process.env.CLAUDE_PRICING_PATH || DEFAULT_PRICING_PATH;
   const now = options.now instanceof Date ? options.now : new Date();
-  const costSource = getCostSource();
 
-  const stats = await readJsonSafe(statsPath);
-  const ccusageSummary = costSource === 'ccusage' ? await fetchCcusageSummary(now) : null;
-
-  const pricing =
-    costSource === 'pricing' ? await refreshPricingIfStale(pricingPath) : await readJsonSafe(pricingPath);
+  const ccusageSummary = await fetchCcusageSummary(now);
+  const pricing = await refreshPricingIfStale(pricingPath);
   const history = (await readJsonSafe(historyPath)) || { version: 1, daily: {}, monthly: {} };
 
-  if (costSource === 'ccusage') {
-    if (!ccusageSummary) {
-      return { ok: false, reason: 'ccusage_missing', historyPath };
-    }
-    const todayKey = toLocalDateKey(now);
-    const currentMonthKey = toLocalMonthKey(now);
+  if (!ccusageSummary) {
+    return { ok: false, reason: 'ccusage_missing', historyPath };
+  }
+  const todayKey = toLocalDateKey(now);
 
-    if (ccusageSummary.dailyRows) {
-      for (const row of ccusageSummary.dailyRows) {
-        const isPastDay = row.date < todayKey;
-        const existing = history.daily[row.date];
-        if (isPastDay && existing) continue;
-        history.daily[row.date] = {
-          ...existing,
-          costUSD: row.costUSD,
-          source: 'ccusage',
-          updatedAt: now.toISOString(),
+  if (ccusageSummary.dailyRows) {
+    for (const row of ccusageSummary.dailyRows) {
+      const isPastDay = row.date < todayKey;
+      const existing = history.daily[row.date];
+      if (isPastDay && existing) continue;
+      let models = {};
+      if (row.modelBreakdowns && row.modelBreakdowns.length > 0) {
+        for (const breakdown of row.modelBreakdowns) {
+          const modelName = breakdown?.modelName || 'unknown';
+          models[modelName] = {
+            input: Number(breakdown?.inputTokens) || 0,
+            output: Number(breakdown?.outputTokens) || 0,
+            cacheRead: Number(breakdown?.cacheReadTokens) || 0,
+            cacheWrite: Number(breakdown?.cacheCreationTokens) || 0,
+          };
+        }
+      } else if (row.modelsUsed && row.modelsUsed.length === 1) {
+        const modelName = row.modelsUsed[0];
+        models[modelName] = {
+          input: row.inputTokens,
+          output: row.outputTokens,
+          cacheRead: row.cacheReadTokens,
+          cacheWrite: row.cacheCreationTokens,
+        };
+      } else {
+        models.unknown = {
+          input: row.inputTokens,
+          output: row.outputTokens,
+          cacheRead: row.cacheReadTokens,
+          cacheWrite: row.cacheCreationTokens,
         };
       }
+      history.daily[row.date] = {
+        ...existing,
+        models,
+        source: 'ccusage',
+        updatedAt: now.toISOString(),
+      };
     }
-
-    if (ccusageSummary.monthlyRows) {
-      for (const row of ccusageSummary.monthlyRows) {
-        const isPastMonth = row.month < currentMonthKey;
-        const existing = history.monthly[row.month];
-        if (isPastMonth && existing) continue;
-        history.monthly[row.month] = {
-          ...existing,
-          costUSD: row.costUSD,
-          source: 'ccusage',
-          updatedAt: now.toISOString(),
-        };
-      }
-    }
-
-    history.lastUpdated = now.toISOString();
-    history.daily = trimHistoryKeys(history.daily, 120);
-    history.monthly = trimHistoryKeys(history.monthly, 24);
-
-    await mkdir(path.dirname(historyPath), { recursive: true, mode: 0o700 });
-    await writeFile(historyPath, JSON.stringify(history, null, 2), { mode: 0o600 });
-
-    const summary = summarizeUsage(history, now);
-    summary.ok = true;
-    summary.source = 'ccusage';
-    summary.missingPricing = [];
-    summary.pricingLoaded = true;
-    summary.historyPath = historyPath;
-    return summary;
   }
 
-  if (costSource !== 'pricing') {
-    return { ok: false, reason: 'invalid_cost_source', historyPath };
-  }
+  history.monthly = computeMonthlyFromDaily(history.daily, now);
 
-  if (!stats?.modelUsage) {
-    return { ok: false, reason: 'stats_missing', historyPath };
-  }
-
-  const totals = normalizeTotals(stats.modelUsage);
-  const lastTotals = history.lastTotals?.models || {};
-  const deltaByModel = {};
-  let deltaFound = false;
-
-  for (const [model, current] of Object.entries(totals)) {
-    const prev = lastTotals[model] || {};
-    const delta = {
-      input: clampDelta(current.input, prev.input),
-      output: clampDelta(current.output, prev.output),
-      cacheRead: clampDelta(current.cacheRead, prev.cacheRead),
-      cacheWrite: clampDelta(current.cacheWrite, prev.cacheWrite),
-    };
-    const hasDelta = TOKEN_KEYS.some((key) => delta[key] > 0);
-    if (hasDelta) deltaFound = true;
-    deltaByModel[model] = delta;
-  }
-
-  history.lastTotals = { models: totals };
   history.lastUpdated = now.toISOString();
-
-  if (deltaFound) {
-    const dayKey = toLocalDateKey(now);
-    const monthKey = toLocalMonthKey(now);
-    const dayBucket = history.daily[dayKey] || { models: {}, costUSD: 0 };
-    const monthBucket = history.monthly[monthKey] || { models: {}, costUSD: 0 };
-
-    for (const [model, delta] of Object.entries(deltaByModel)) {
-      addModelTokens(dayBucket, model, delta);
-      addModelTokens(monthBucket, model, delta);
-    }
-
-    const cost = computeCost(deltaByModel, pricing);
-    dayBucket.costUSD = (dayBucket.costUSD || 0) + cost.total;
-    monthBucket.costUSD = (monthBucket.costUSD || 0) + cost.total;
-    dayBucket.missingPricing = cost.missing;
-    monthBucket.missingPricing = cost.missing;
-
-    history.daily[dayKey] = dayBucket;
-    history.monthly[monthKey] = monthBucket;
-  }
-
   history.daily = trimHistoryKeys(history.daily, 120);
   history.monthly = trimHistoryKeys(history.monthly, 24);
 
@@ -572,8 +513,11 @@ export async function updateUsageHistory(options = {}) {
   await writeFile(historyPath, JSON.stringify(history, null, 2), { mode: 0o600 });
 
   const summary = summarizeUsage(history, now, pricing);
-  summary.historyPath = historyPath;
+  summary.ok = true;
+  summary.source = 'ccusage';
+  summary.missingPricing = pricing ? summary.missingPricing : [];
   summary.pricingLoaded = !!pricing;
+  summary.historyPath = historyPath;
   return summary;
 }
 
@@ -582,13 +526,18 @@ export function summarizeUsage(history, now = new Date(), pricing = null) {
   const monthKey = toLocalMonthKey(now);
   const dailyKeys = Object.keys(history?.daily || {}).sort();
   const last3 = dailyKeys.slice(-3);
-  const last3Cost = last3.reduce((sum, key) => sum + (history.daily[key]?.costUSD || 0), 0);
-  const monthCost = history?.monthly?.[monthKey]?.costUSD || 0;
-  const dayCost = history?.daily?.[dayKey]?.costUSD || 0;
-  const allTimeCost = Object.values(history?.monthly || {}).reduce(
-    (sum, entry) => sum + (entry?.costUSD || 0),
-    0
-  );
+  const last3Cost = last3.reduce((sum, key) => {
+    const models = history.daily[key]?.models || {};
+    return sum + computeCostFromModels(models, pricing).total;
+  }, 0);
+  const monthModels = history?.monthly?.[monthKey]?.models || {};
+  const monthCost = computeCostFromModels(monthModels, pricing).total;
+  const dayModels = history?.daily?.[dayKey]?.models || {};
+  const dayCost = computeCostFromModels(dayModels, pricing).total;
+  const allTimeCost = Object.values(history?.monthly || {}).reduce((sum, entry) => {
+    const models = entry?.models || {};
+    return sum + computeCostFromModels(models, pricing).total;
+  }, 0);
 
   const missing = new Set();
   if (pricing) {
@@ -598,7 +547,6 @@ export function summarizeUsage(history, now = new Date(), pricing = null) {
         if (!resolvePricing(model, pricing)) missing.add(model);
       }
     }
-    const monthModels = history?.monthly?.[monthKey]?.models || {};
     for (const model of Object.keys(monthModels)) {
       if (!resolvePricing(model, pricing)) missing.add(model);
     }

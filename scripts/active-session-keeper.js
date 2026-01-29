@@ -32,6 +32,7 @@ function parseArgs(argv) {
     reauthCooldownMinutes: 60,
     pauseMinutes: null,
     resume: false,
+    force: false,
     maxDepth: DEFAULTS.maxDepth,
     tailBytes: DEFAULTS.tailBytes,
     transcriptPath: null,
@@ -54,6 +55,8 @@ function parseArgs(argv) {
       config.pauseMinutes = Number(arg.split('=')[1]);
     } else if (arg === '--resume') {
       config.resume = true;
+    } else if (arg === '--force') {
+      config.force = true;
     } else if (arg.startsWith('--max-depth=')) {
       config.maxDepth = Number(arg.split('=')[1]);
     } else if (arg.startsWith('--tail-bytes=')) {
@@ -231,15 +234,19 @@ async function tick(config) {
       maxAgeMinutes: 360,
     });
     if (!limitsInfo) {
-      log('Unable to fetch limits; skipping.');
-      return;
+      if (config.force) {
+        log('Limits unavailable; forcing keepalive.');
+      } else {
+        log('Unable to fetch limits; skipping.');
+        return;
+      }
     }
-    if (limitsInfo.stale) {
+    if (limitsInfo?.stale) {
       log('Using cached limits (stale).', { ageMinutes: limitsInfo.ageMinutes });
     }
-    const limits = limitsInfo.limits;
+    const limits = limitsInfo?.limits;
 
-    if (limitsInfo.errorCode === 'token_expired') {
+    if (limitsInfo?.errorCode === 'token_expired' && !config.force) {
       const reauthCooldownMs = config.reauthCooldownMinutes * 60 * 1000;
       if (state?.lastReauthOpen && now - state.lastReauthOpen < reauthCooldownMs) {
         log('Re-auth cooldown active; skipping app launch.');
@@ -255,16 +262,20 @@ async function tick(config) {
       return;
     }
 
-    const okFive = limitOk(limits.five_hour);
-    const okSeven = limitOk(limits.seven_day);
+    const okFive = limitOk(limits?.five_hour);
+    const okSeven = limitOk(limits?.seven_day);
 
-    if (!okFive || !okSeven || limitsInfo.stale) {
+    if ((!okFive || !okSeven || limitsInfo?.stale) && !config.force) {
       log('Rate limits reached or unavailable; skipping.', {
-        five_hour: limits.five_hour?.utilization,
-        seven_day: limits.seven_day?.utilization,
-        stale: limitsInfo.stale,
+        five_hour: limits?.five_hour?.utilization,
+        seven_day: limits?.seven_day?.utilization,
+        stale: limitsInfo?.stale,
       });
       return;
+    }
+
+    if (config.force) {
+      log('Force keepalive enabled; skipping limits checks.');
     }
 
     const cooldownMs = config.cooldownMinutes * 60 * 1000;

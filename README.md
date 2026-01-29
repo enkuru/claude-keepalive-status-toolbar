@@ -98,6 +98,7 @@ It scans JSONL files and uses the most recent timestamp found.
 - `--transcript-path=/path/to/file.jsonl`
 - `--once`
 - `--dry-run`
+- `--force` (ignore limits/cached checks)
 
 ### Environment variables
 
@@ -105,13 +106,11 @@ It scans JSONL files and uses the most recent timestamp found.
 - `CLAUDE_ARGS` (space-separated args for the `claude` process)
 - `CLAUDE_APP` (default: `Claude Code`) — app name used for auto re-auth launch
 - `CLAUDE_TRANSCRIPT_DIRS` (path-delimited list of extra dirs)
-- `CLAUDE_STATS_CACHE_PATH` (default: `~/.claude/stats-cache.json`)
 - `CLAUDE_PRICING_PATH` (default: `config/pricing.json`)
-- `USAGE_COST_SOURCE` (default: `ccusage`; options: `ccusage`, `pricing` **(beta)**)
 - `CCUSAGE_CMD` (optional, default: `ccusage`)
 - `CCUSAGE_ARGS` (optional extra args for ccusage)
 - `CCUSAGE_CACHE_MINUTES` (default: `0`, runs ccusage every refresh)
-- `CACHE_WRITE_MODE` (pricing mode: `5m` or `1h`, default `5m`)
+- `CACHE_WRITE_MODE` (`5m` or `1h`, default `5m`)
 - `ACTIVE_MINUTES`, `TRANSCRIPT_PATH`, `MAX_DEPTH`, `TAIL_BYTES`
 - `KEEPALIVE_PATH` or `KEEPALIVE_REPO` (used by the menu button to find the keepalive script)
 
@@ -120,11 +119,6 @@ It scans JSONL files and uses the most recent timestamp found.
 - **“Last activity: unknown”**
   - Ensure you have `~/.claude/projects` or `~/.config/claude/projects` with JSONL files.
   
-- **Pricing mode is beta**
-  - `USAGE_COST_SOURCE=pricing` uses local stats and inferred cache pricing.
-  - Costs can drift if pricing changes or cache mode differs.
-  - We auto-refresh pricing monthly from the official docs.
-  
 - **Usage cost looks wrong**
   - Update `config/pricing.json` to current rates (or wait for auto-refresh).
   - The history is stored at `~/.cache/claude-dashboard/usage-history.json`.
@@ -132,9 +126,9 @@ It scans JSONL files and uses the most recent timestamp found.
     ```
     npm i -g ccusage
     ```
-  - If using **pricing** mode, the plugin auto-refreshes pricing monthly from the official docs.
 - **“Send hello now” is disabled**
   - Either limits are full, or the keepalive script path can’t be found.
+  - Use **“Send hello anyway”** to override limits when needed.
 - **Limits show “Unknown” or “Cached” after sleep**
   - This usually means **Keychain access is blocked** or the **OAuth token expired**.
   - When the API reports **token expired**, the keepalive will auto‑open **Claude Code** (once per hour) so you can re‑auth.

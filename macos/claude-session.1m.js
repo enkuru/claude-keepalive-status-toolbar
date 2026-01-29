@@ -237,23 +237,34 @@ async function main() {
   const fiveUtil = limits?.five_hour?.utilization;
   const fiveClamped = clampPercent(fiveUtil);
   const fiveResetTitle = limits?.five_hour?.resets_at;
+  const sevenUtil = limits?.seven_day?.utilization;
+  const sevenClamped = clampPercent(sevenUtil);
+  const sevenResetTitle = limits?.seven_day?.resets_at;
+  const fiveFull = !!(
+    limits &&
+    typeof limits.five_hour?.utilization === 'number' &&
+    Number.isFinite(limits.five_hour.utilization) &&
+    limits.five_hour.utilization >= 100
+  );
+  const sevenFull = !!(
+    limits &&
+    typeof limits.seven_day?.utilization === 'number' &&
+    Number.isFinite(limits.seven_day.utilization) &&
+    limits.seven_day.utilization >= 100
+  );
   let headerState = 'Idle';
-  if (!limits) headerState = 'Unknown';
-  else if (fiveClamped !== null && fiveClamped >= 100) headerState = 'Limit';
+  if (!limits) headerState = limitsInfo?.stale ? 'Cached' : 'Unknown';
+  else if (fiveFull || sevenFull) headerState = 'Limit';
+  else if (limitsInfo?.stale) headerState = 'Cached';
   else if (isActive) headerState = 'Active';
   const limitsOk =
     limits && limitOk(limits.five_hour) && limitOk(limits.seven_day);
   const statusColor = pickStatusColor(headerState);
-  const fiveFull = limits ? !limitOk(limits.five_hour) : false;
   const fiveText = fiveFull
     ? `5h: ${formatResetTime(fiveResetTitle)}`
     : fiveClamped === null
     ? '5h: n/a'
     : `5h: ${Math.round(fiveClamped)}%`;
-  const sevenUtil = limits?.seven_day?.utilization;
-  const sevenClamped = clampPercent(sevenUtil);
-  const sevenResetTitle = limits?.seven_day?.resets_at;
-  const sevenFull = limits ? !limitOk(limits.seven_day) : false;
   const sevenText = sevenFull
     ? `7d: ${formatResetTime(sevenResetTitle)}`
     : sevenClamped === null
@@ -321,8 +332,6 @@ async function main() {
     const reason = usageSummary?.reason;
     if (reason === 'ccusage_missing') {
       menuLine('Usage: ccusage missing | color=#9CA3AF');
-    } else if (reason === 'stats_missing') {
-      menuLine('Usage: stats-cache missing | color=#9CA3AF');
     } else {
       menuLine('Usage: unavailable | color=#9CA3AF');
     }
@@ -367,6 +376,16 @@ async function main() {
         '--cooldown-minutes=0',
       ]
     : null;
+  const forceOnceArgs = keeperPath
+    ? [
+        nodePath,
+        keeperPath,
+        '--once',
+        '--force',
+        '--active-minutes=0',
+        '--cooldown-minutes=0',
+      ]
+    : null;
   const pauseArgs = keeperPath
     ? [nodePath, keeperPath, '--pause-minutes=30']
     : null;
@@ -382,6 +401,11 @@ async function main() {
     menuLine('Send hello now (set KEEPALIVE_PATH) | disabled=true');
   } else {
     menuLine('Send hello now (limits full) | disabled=true');
+  }
+  if (!limitsOk && forceOnceArgs) {
+    menuLine(
+      `Send hello anyway | color=#F97316 bash=${forceOnceArgs[0]} param1=${forceOnceArgs[1]} param2=${forceOnceArgs[2]} param3=${forceOnceArgs[3]} param4=${forceOnceArgs[4]} param5=${forceOnceArgs[5]} terminal=false refresh=true`
+    );
   }
   if (pauseArgs) {
     menuLine(
