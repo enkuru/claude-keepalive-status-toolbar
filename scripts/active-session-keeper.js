@@ -33,6 +33,7 @@ function parseArgs(argv) {
     pauseMinutes: null,
     resume: false,
     force: false,
+    ignoreUtilization: false,
     maxDepth: DEFAULTS.maxDepth,
     tailBytes: DEFAULTS.tailBytes,
     transcriptPath: null,
@@ -57,6 +58,8 @@ function parseArgs(argv) {
       config.resume = true;
     } else if (arg === '--force') {
       config.force = true;
+    } else if (arg === '--ignore-utilization') {
+      config.ignoreUtilization = true;
     } else if (arg.startsWith('--max-depth=')) {
       config.maxDepth = Number(arg.split('=')[1]);
     } else if (arg.startsWith('--tail-bytes=')) {
@@ -272,6 +275,17 @@ async function tick(config) {
         stale: limitsInfo?.stale,
       });
       return;
+    }
+
+    if (!config.force && !config.ignoreUtilization) {
+      const fiveUtil = Number(limits?.five_hour?.utilization);
+      if (Number.isFinite(fiveUtil) && fiveUtil > 0) {
+        log('Recent 5h usage detected; skipping keepalive.', {
+          utilization: fiveUtil,
+          resets_at: limits?.five_hour?.resets_at,
+        });
+        return;
+      }
     }
 
     if (config.force) {

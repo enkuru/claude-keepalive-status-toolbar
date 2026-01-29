@@ -372,7 +372,8 @@ async function main() {
         nodePath,
         keeperPath,
         '--once',
-        '--active-minutes=0',
+        '--ignore-utilization',
+        `--active-minutes=${config.activeMinutes}`,
         '--cooldown-minutes=0',
       ]
     : null;
@@ -382,7 +383,7 @@ async function main() {
         keeperPath,
         '--once',
         '--force',
-        '--active-minutes=0',
+        `--active-minutes=${config.activeMinutes}`,
         '--cooldown-minutes=0',
       ]
     : null;
