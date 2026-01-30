@@ -12,8 +12,9 @@ import {
   formatAge,
 } from '../scripts/active-session-core.js';
 import { updateUsageHistory } from '../scripts/usage-history.js';
-import { existsSync } from 'fs';
-import { writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, statSync, writeFileSync } from 'fs';
+import { spawnSync } from 'child_process';
+import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -122,6 +123,28 @@ function progressBar(percent, width = 10) {
   return `${'█'.repeat(filled)}${'░'.repeat(empty)} ${Math.round(clamped)}%`;
 }
 
+function getMenuIconBase64(iconPath, size = 16) {
+  if (!existsSync(iconPath)) return '';
+  const cacheDir = path.join(os.homedir(), '.cache', 'claude-dashboard');
+  const cachedPath = path.join(cacheDir, `menu-icon-${size}.png`);
+  try {
+    const srcStat = statSync(iconPath);
+    const cachedStat = existsSync(cachedPath) ? statSync(cachedPath) : null;
+    if (!cachedStat || cachedStat.mtimeMs < srcStat.mtimeMs) {
+      mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
+      const result = spawnSync(
+        '/usr/bin/sips',
+        ['-s', 'format', 'png', '-Z', String(size), iconPath, '--out', cachedPath],
+        { encoding: 'utf-8' }
+      );
+      if (result.status !== 0 || !existsSync(cachedPath)) return '';
+    }
+    return readFileSync(cachedPath).toString('base64');
+  } catch {
+    return '';
+  }
+}
+
 function formatResetTime(value) {
   if (!value) return 'unknown';
   const ts = new Date(value).getTime();
@@ -219,7 +242,14 @@ async function main() {
   });
   const limits = limitsInfo?.limits ?? null;
   const state = await readState();
-  const scriptDir = path.dirname(fileURLToPath(import.meta.url));
+  const scriptPath = fileURLToPath(import.meta.url);
+  let resolvedScriptPath = scriptPath;
+  try {
+    resolvedScriptPath = realpathSync(scriptPath);
+  } catch {
+    // ignore
+  }
+  const scriptDir = path.dirname(resolvedScriptPath);
   const repoRoot = path.resolve(scriptDir, '..');
   const envKeeperPath = process.env.KEEPALIVE_PATH;
   const envRepoPath = process.env.KEEPALIVE_REPO;
@@ -274,8 +304,16 @@ async function main() {
   if (usageSummary?.ok && Number.isFinite(usageSummary.dayCost)) {
     titleUsage = formatUsd(usageSummary.dayCost);
   }
-  const titleParts = ['Claude', titleUsage || null, fiveText, sevenText].filter(Boolean);
-  menuLine(`${titleParts.join('  ')} | color=${statusColor} font=SF Pro Text size=12`);
+  const iconPath = path.join(repoRoot, 'images', 'icon.png');
+  let iconSuffix = '';
+  if (existsSync(iconPath)) {
+    const iconBase64 = getMenuIconBase64(iconPath, 16);
+    if (iconBase64) iconSuffix = ` image=${iconBase64}`;
+  }
+  const titleParts = [titleUsage || null, fiveText, sevenText].filter(Boolean);
+  const baseTitle = titleParts.length ? titleParts.join('  ') : 'Claude';
+  const titleText = iconSuffix ? `  ${baseTitle}` : baseTitle;
+  menuLine(`${titleText} | color=${statusColor} font=SF Pro Text size=12${iconSuffix}`);
   menuLine('---');
   const keepaliveState = state?.pauseUntil && Date.now() < state.pauseUntil
     ? 'Paused'
